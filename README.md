@@ -38,7 +38,7 @@ I've always felt coding agents get talked about as if they were arcane. Strip a 
 
 The engine (loop, model interface, context, tools, sessions) is 1,081 lines once you drop blank lines and comments. Counting the outer CLI, config and packaging too, the whole package is 18 files: 1,714 physical lines, 1,385 net, every one short enough to read in a single sitting.
 
-And it really runs: reads and writes files, executes shell, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. 86 tests, all green. But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
+And it really runs: reads and writes files, executes shell in a sandbox, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. 159 tests, all green (the container integration tests skip themselves when Docker is unavailable). But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
 
 The code came out of a public teardown: open analyses have already exposed a lot of the load-bearing architecture inside production agents like Claude Code. I took the most essential layer and rewrote it honestly, in as little code as I could. So reading CoreCoder is roughly like reading a runnable, annotated take on how that kind of agent works, except it's only a minimal reimplementation, sitting right there on your machine for you to take apart and change.
 
@@ -78,6 +78,67 @@ corecoder                                             # interactive REPL
 corecoder -p "add error handling to parse_config()"   # one-shot mode, exits when done
 ```
 
+## Code runs in a sandbox
+
+The `bash` tool in the original core gated commands with a regex blacklist — a
+handful of known-destructive patterns, trivially bypassed by any command the
+list hadn't seen. Phase 1 of the production pass replaces it with
+`execute_in_sandbox`: every command runs in a throwaway Docker container that has
+
+- **no network** — there is no channel to exfiltrate to,
+- a **read-only root filesystem** and a **non-root `sandbox` user**,
+- **no extra privileges** (`no-new-privileges`, every capability dropped),
+- **memory / CPU / process caps** (configurable — see the table below) and a
+  **hard timeout** — a runaway command kills and re-creates the container,
+  keeping the workspace volume intact; if the container keeps OOM-killing,
+  execution stops after two retries instead of looping forever,
+- the project mounted **read-only at `/src`**, with edits landing in a scratch
+  `/workspace` that `get_diff()` surfaces as a unified diff,
+- and a **confirmation layer** for risky-but-legal commands (network egress,
+  package installs, git rewrites/pushes, recursive deletes) — a lightweight
+  mirror of Claude Code's permission system. Approvals are cached per session
+  keyed by `(rule, command)`; a confirmation waits at most 60 seconds and
+  Ctrl+C counts as a denial; a denied command comes back with a concrete
+  alternative and a "don't retry" note. Set `CORECODER_ALLOW_RISKY_COMMANDS=1`
+  to auto-approve unattended.
+
+Build the image once:
+
+```bash
+docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/
+```
+
+### Resource limits
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `CORECODER_SANDBOX_MEM` | `512m` | container memory cap |
+| `CORECODER_SANDBOX_CPU` | `0.5` | CPU cores (may be fractional) |
+| `CORECODER_SANDBOX_PIDS` | `128` | max processes in the container |
+
+Large front-end builds: `CORECODER_SANDBOX_MEM=2g`. Java/Maven compiles:
+`CORECODER_SANDBOX_MEM=4g CORECODER_SANDBOX_CPU=2`.
+
+### Sandbox → host file sync
+
+The sandbox writes to `/workspace`, which the host file tools can't see.
+`execute_in_sandbox` therefore only *reports* which files changed (up to 50,
+via `git status` in the workspace), and `sync_workspace()` is the explicit
+pull-back step:
+
+- `sync_workspace()` copies changed files to the host project directory.
+- `sync_workspace(clean=True)` additionally deletes host files that were
+  deleted inside the sandbox.
+- `read_file` / `write_file` accept `/workspace/...` paths directly: when the
+  sandbox volume exists they are mapped onto the host project directory. The
+  mapping is keyed on the **volume**, not the container, so it still works
+  after the sandbox is stopped.
+
+If Docker isn't reachable the agent degrades gracefully instead of dying: it
+**fails closed** by default, and only runs commands on the host with an
+allowlist, a timeout, and a WARNING audit log after you confirm — set
+`CORECODER_ALLOW_LOCAL_EXEC=1` for unattended opt-in.
+
 ## Read it: the code map
 
 Laid out flat, the whole project is this big. Skim it before you clone and you'll know where everything is. This is the most concrete difference from Claude Code's hundreds of thousands of lines: you can read it like the table of contents of a book. Start from the main loop in `agent.py`; that's the heart of the whole agent.
@@ -91,8 +152,18 @@ corecoder/
 ├── prompt.py       system prompt                           33 lines
 ├── cli.py          REPL + slash commands + one-shot       270 lines
 ├── config.py       env-var config                          57 lines
+├── sandbox/        Docker-backed command isolation        ~1200 lines   ← new
+│   ├── docker_executor.py  hardened container lifecycle   440 lines
+│   ├── executor.py         backend selection + fallback   230 lines
+│   ├── sync.py             /workspace <-> host incremental sync  160 lines
+│   ├── policy.py           permission confirm + cache    230 lines
+│   ├── local_executor.py   degraded host allowlist        160 lines
+│   └── logger.py·models.py·locking.py                      90 lines
 └── tools/
-    ├── bash.py       shell + dangerous-command gate + cd  127 lines
+    ├── sandbox_tool.py  execute_in_sandbox (replaces bash) 165 lines
+    ├── sync_tool.py     sync_workspace (pull changes back)  90 lines
+    ├── workspace_path.py  /workspace path mapping          55 lines
+    ├── bash.py       pre-check regex gate (kept as helper) 127 lines
     ├── edit.py       unique-match search/replace + diff    92 lines
     ├── grep.py       content search                        79 lines
     ├── glob_tool.py  filename matching                     47 lines
@@ -102,7 +173,7 @@ corecoder/
     └── base.py       tool base class                       27 lines
 ```
 
-Seven tools: `bash`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, and `agent` (which spawns a sub-agent). Everything else is the CLI shell, config, and packaging wrapped around that engine core.
+(The container image itself is built from `sandbox/Dockerfile` at the repo root.) Eight tools: `execute_in_sandbox` (the sandboxed successor to `bash`), `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `agent` (which spawns a sub-agent), and `fetch_url`. Everything else is the CLI shell, config, and packaging wrapped around that engine core.
 
 ## A `while` loop is the whole agent
 
@@ -166,7 +237,7 @@ print(Agent(llm=llm).chat("find every TODO comment in this project and list them
 
 Going deeper, the directions are out in the open too. None of the following is in CoreCoder, by design, not because it's unfinished. Flip it around and each one is an entry point you can carry into a real tool of your own:
 
-- **The dangerous-command blocking in bash is just a regex blacklist.** It guards against slips, not a security sandbox. Facing untrusted input means reaching for seccomp or container isolation. This is the hardest of the four; it goes all the way down to the syscall and isolation layer.
+- **The sandbox isolates the shell, not the whole agent.** `execute_in_sandbox` runs commands in a hardened container (no network, read-only rootfs, caps dropped, limits enforced), but file edits still land on your host through `edit_file`/`write_file`, and the sandbox workspace is surfaced as a diff rather than written back. Making file tools sandboxed too — or syncing the workspace out on exit — is the natural next step.
 - **Retry is only exponential backoff.** No fallback model, no hard dollar budget. Follow `llm.py` down and add a fallback model chain plus a stop-on-over-budget gate; the change stays mostly inside that one file.
 - **Sub-agents only run the plainest synchronous execution.** Make it async or a streaming executor and you close the exact gap the fifth essay identifies between this and how production agents stream execution.
 - **No MCP, no RAG.** Wire up MCP to give it the external tool ecosystem, or add retrieval-based code location for big repos. Both are real ways to grow from a minimal core into your own stronger agent.
@@ -200,7 +271,7 @@ If working through CoreCoder was useful, here are a few other tools I've built a
 
 ## Contributing / License
 
-Before you send anything, run `pytest tests/ -q` (86 tests), `ruff check`, and `compileall`, and make sure they're green. MIT licensed: fork it, learn from it, ship something better. A mention of this project is appreciated.
+Before you send anything, run `pytest tests/ -q` (159 tests), `ruff check`, and `compileall`, and make sure they're green. The Docker-backed sandbox tests need the image built once: `docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`. MIT licensed: fork it, learn from it, ship something better. A mention of this project is appreciated.
 
 ---
 

@@ -16,7 +16,18 @@ def test_public_api_exports():
     assert Agent is not None
     assert LLM is not None
     assert Config is not None
-    assert len(ALL_TOOLS) == 7
+    # bash was replaced by execute_in_sandbox; sync_workspace + fetch_url added
+    assert {t.name for t in ALL_TOOLS} == {
+        "execute_in_sandbox",
+        "sync_workspace",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "glob",
+        "grep",
+        "agent",
+        "fetch_url",
+    }
 
 
 def test_config_from_env(monkeypatch):

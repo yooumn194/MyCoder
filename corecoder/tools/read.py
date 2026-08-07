@@ -1,7 +1,7 @@
 """File reading with line numbers."""
 
-from pathlib import Path
 from .base import Tool
+from .workspace_path import resolve_workspace_path, try_on_demand_sync
 
 
 class ReadFileTool(Tool):
@@ -31,9 +31,20 @@ class ReadFileTool(Tool):
 
     def execute(self, file_path: str, offset: int = 1, limit: int = 2000) -> str:
         try:
-            p = Path(file_path).expanduser().resolve()
+            p = resolve_workspace_path(file_path)
             if not p.exists():
-                return f"Error: {file_path} not found"
+                # The file may live in the sandbox workspace but not yet on the
+                # host — pull just that one file on demand before giving up.
+                if file_path.startswith("/workspace"):
+                    try_on_demand_sync(file_path)
+                if not p.exists():
+                    if file_path.startswith("/workspace"):
+                        return (
+                            f"Error: {file_path} does not exist in the sandbox "
+                            "workspace. Run the command that creates it first, "
+                            "or call sync_workspace() to sync it to the host."
+                        )
+                    return f"Error: {file_path} not found"
             if not p.is_file():
                 return f"Error: {file_path} is a directory, not a file"
 

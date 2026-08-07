@@ -38,7 +38,7 @@ nanoGPT 那一列是拿来对照的：它最小、可读，但教的是训一个
 
 引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1081 行。连最外层的 CLI、配置、打包一起算，整个包 18 个文件、物理 1714 行、净 1385 行，每个文件都短到能一口气读完。
 
-它真能跑：读写文件、执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你，86 个测试是绿的。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
+它真能跑：读写文件、在沙箱里执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你，159 个测试是绿的（容器集成测试在 Docker 不可用时自动跳过）。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
 
 代码来自一次公开拆解。公开的源码分析里，Claude Code 这类生产级 agent 暴露出不少关键架构，我挑出最核心的一层，用尽量少的代码诚实地复写了一遍。所以读 CoreCoder，约等于读一份基于公开源码分析的「可运行注释版」：讲的是这类 agent 的核心思路，而它本身只是最小复写，就摆在你机器上，随你拆、随你改。
 
@@ -78,6 +78,43 @@ corecoder                                  # 交互式 REPL
 corecoder -p "给 parse_config() 加错误处理"   # 一次性模式，干完就退
 ```
 
+## 代码在沙箱里跑
+
+最初核心里的 `bash` 工具用正则黑名单拦命令——列了几个已知危险模式，没见过的命令一下就绕过。第一阶段生产化升级把它换成了 `execute_in_sandbox`：每条命令都在一次性 Docker 容器里执行，容器有
+
+- **无网络**——不存在往外传数据的通道，
+- **只读根文件系统** + **非 root 的 `sandbox` 用户**，
+- **无额外权限**（`no-new-privileges`，丢掉全部 capability），
+- **内存 / CPU / 进程数上限**（默认 512 MB / 半核 / 128 pid，可用环境变量调）与**硬超时**——失控命令直接杀掉容器重建，工作区卷不受影响；容器连续 OOM 被杀时，重试两次即熔断停止，不再无限循环，
+- 项目以**只读方式挂到 `/src`**，改动落在临时 `/workspace`，`get_diff()` 把它输出成 unified diff，
+- 以及一层**危险命令确认**：网络外联、装包、git 改写/推送、递归删除这类「危险但合法」的命令，执行前会先征询确认——仿照 Claude Code 的 permission system 做的一个轻量版。批准按「规则 + 命令」在会话内缓存；确认等待最多 60 秒，Ctrl+C 视为拒绝；被拒的命令会返回具体替代方案并提示「不要重试」。无人值守场景用 `CORECODER_ALLOW_RISKY_COMMANDS=1` 自动放行。
+
+先构建一次镜像：
+
+```bash
+docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/
+```
+
+### 资源限制
+
+| 环境变量 | 默认值 | 说明 |
+|---|---|---|
+| `CORECODER_SANDBOX_MEM` | `512m` | 容器内存上限 |
+| `CORECODER_SANDBOX_CPU` | `0.5` | CPU 核数（可为小数） |
+| `CORECODER_SANDBOX_PIDS` | `128` | 容器内最大进程数 |
+
+大型前端项目建议 `CORECODER_SANDBOX_MEM=2g`；Java/Maven 编译建议 `CORECODER_SANDBOX_MEM=4g CORECODER_SANDBOX_CPU=2`。
+
+### 沙箱 → 宿主文件同步
+
+沙箱写到 `/workspace`，宿主文件工具看不到。因此 `execute_in_sandbox` 只**报告**改动了哪些文件（最多 50 个，用工作区里的 `git status` 判定），真正拉回宿主的是显式的 `sync_workspace()`：
+
+- `sync_workspace()` 把变更文件复制回宿主项目目录。
+- `sync_workspace(clean=True)` 额外删除沙箱内已删除的宿主文件。
+- `read_file` / `write_file` 可直接用 `/workspace/...` 路径：沙箱卷存在时自动映射到宿主项目目录。映射按**卷名**而非容器判定，沙箱停止后依然有效。
+
+Docker 不可用时不会崩，而是**优雅降级**：默认**拒绝**（fail closed），只有在你确认之后，才允许带白名单、超时和 WARNING 审计日志在本机跑命令；无人值守场景用 `CORECODER_ALLOW_LOCAL_EXEC=1` 显式开启。
+
 ## 读懂它：代码地图
 
 整个项目摊开就这么大，clone 之前扫一眼，心里就有数了。这也是它和 Claude Code 几十万行最实在的区别：你能把它当一本书的目录来读。建议从 `agent.py` 的主循环读起，那是整个 agent 的心脏。
@@ -91,8 +128,18 @@ corecoder/
 ├── prompt.py       系统提示词                          33 行
 ├── cli.py          REPL + 斜杠命令 + 一次性模式        270 行
 ├── config.py       环境变量配置                        57 行
+├── sandbox/        Docker 容器命令隔离                ~1200 行   ← 新增
+│   ├── docker_executor.py  加固容器生命周期           440 行
+│   ├── executor.py         后端选择 + 优雅降级        230 行
+│   ├── sync.py             /workspace ↔ 宿主增量同步   160 行
+│   ├── policy.py           权限确认 + 会话缓存         230 行
+│   ├── local_executor.py   降级版宿主白名单执行        160 行
+│   └── logger.py·models.py·locking.py                  90 行
 └── tools/
-    ├── bash.py       shell + 危险命令闸 + cd 追踪      127 行
+    ├── sandbox_tool.py  execute_in_sandbox（取代 bash） 165 行
+    ├── sync_tool.py     sync_workspace（拉回变更）      90 行
+    ├── workspace_path.py  /workspace 路径映射           55 行
+    ├── bash.py       预检正则闸（保留作辅助）          127 行
     ├── edit.py       唯一匹配搜索替换 + diff            92 行
     ├── grep.py       内容搜索                           79 行
     ├── glob_tool.py  文件名匹配                         47 行
@@ -102,7 +149,7 @@ corecoder/
     └── base.py       工具基类                           27 行
 ```
 
-七个工具：`bash`、`read_file`、`write_file`、`edit_file`、`glob`、`grep`、`agent`（派子 agent）。其余都是包在引擎核心外面的 CLI 外壳、配置和打包。
+（容器镜像本身由仓库根目录的 `sandbox/Dockerfile` 构建。）九个工具：`execute_in_sandbox`（`bash` 的沙箱版继任者）、`sync_workspace`（拉回沙箱变更）、`read_file`、`write_file`、`edit_file`、`glob`、`grep`、`agent`（派子 agent）、`fetch_url`。其余都是包在引擎核心外面的 CLI 外壳、配置和打包。
 
 ## 一个 while 循环就是 agent 的本体
 
@@ -166,7 +213,7 @@ print(Agent(llm=llm).chat("找出项目里所有 TODO 注释并列出来"))
 
 往深里做，方向也都摆在明处。下面这些 CoreCoder 都没做，是设计取舍，不是没做完；换个角度，每一条都是你能接着往下做、把它推向更强的入口：
 
-- **bash 的危险命令拦截只是正则黑名单。** 防手滑，不是安全沙箱。要面对不可信输入，就得上 seccomp 或容器隔离。这条最硬，要一路走到系统调用和隔离那一层。
+- **沙箱只隔离了 shell，没隔离整个 agent。** `execute_in_sandbox` 在加固容器里跑命令（无网络、只读根文件系统、丢光 capability、限制拉满），但 `edit_file` / `write_file` 的文件改动仍然落在宿主上，沙箱工作区只以 diff 形式暴露、不会写回仓库。下一步自然是让文件工具也进沙箱，或在退出时把工作区同步回宿主。
 - **重试只做了指数退避。** 没有 fallback 模型，也没有美元硬预算。顺着 `llm.py` 往下，加一条 fallback 模型链和超预算自动停的闸，改动基本就集中在这一个文件。
 - **子 agent 只有最朴素的同步执行。** 做成异步或流式执行器，正好补上第五篇点名的、相对生产级 agent 流式执行的那段差距。
 - **不做 MCP，不做 RAG。** 接上 MCP 让它用上外部工具生态，或给大仓加检索式的代码定位，都是从「最小核心」往「你自己的更强 agent」扩的真实方向。
@@ -200,7 +247,7 @@ quit / exit      退出（Ctrl+C 取消当前回合）
 
 ## 贡献 / License
 
-动手之前先跑一遍 `pytest tests/ -q`（86 个测试）、`ruff check` 和 `compileall`，绿了再提。MIT License，欢迎 fork 拿去造更好的东西，能在 README 里留一句出处就更好。
+动手之前先跑一遍 `pytest tests/ -q`（159 个测试）、`ruff check` 和 `compileall`，绿了再提。Docker 沙箱测试需要先构建一次镜像：`docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`。MIT License，欢迎 fork 拿去造更好的东西，能在 README 里留一句出处就更好。
 
 ---
 
