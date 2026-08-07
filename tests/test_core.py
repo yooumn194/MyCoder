@@ -16,10 +16,13 @@ def test_public_api_exports():
     assert Agent is not None
     assert LLM is not None
     assert Config is not None
-    # bash was replaced by execute_in_sandbox; sync_workspace + fetch_url added
+    # bash was replaced by execute_in_sandbox; sync_workspace, grep_search,
+    # list_files and fetch_url added
     assert {t.name for t in ALL_TOOLS} == {
         "execute_in_sandbox",
         "sync_workspace",
+        "grep_search",
+        "list_files",
         "read_file",
         "write_file",
         "edit_file",

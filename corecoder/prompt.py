@@ -3,6 +3,8 @@
 import os
 import platform
 
+from .prompts.search_strategy import SEARCH_STRATEGY_PROMPT
+
 
 def system_prompt(tools) -> str:
     cwd = os.getcwd()
@@ -34,4 +36,4 @@ You help with software engineering: writing code, fixing bugs, refactoring, expl
 
 # Degraded-mode warning
 If you see a warning that commands are running WITHOUT Docker isolation (unsandboxed local mode), treat it as an emergency: the sandbox is unavailable and every command runs directly on the host with no containment. Prefer read-only commands, and stop rather than take destructive or network-reaching actions.
-"""
+""" + SEARCH_STRATEGY_PROMPT

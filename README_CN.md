@@ -38,7 +38,7 @@ nanoGPT 那一列是拿来对照的：它最小、可读，但教的是训一个
 
 引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1081 行。连最外层的 CLI、配置、打包一起算，整个包 18 个文件、物理 1714 行、净 1385 行，每个文件都短到能一口气读完。
 
-它真能跑：读写文件、在沙箱里执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你，159 个测试是绿的（容器集成测试在 Docker 不可用时自动跳过）。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
+它真能跑：读写文件、在沙箱里执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你，192 个测试是绿的（容器集成测试在 Docker 不可用时自动跳过）。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
 
 代码来自一次公开拆解。公开的源码分析里，Claude Code 这类生产级 agent 暴露出不少关键架构，我挑出最核心的一层，用尽量少的代码诚实地复写了一遍。所以读 CoreCoder，约等于读一份基于公开源码分析的「可运行注释版」：讲的是这类 agent 的核心思路，而它本身只是最小复写，就摆在你机器上，随你拆、随你改。
 
@@ -138,18 +138,21 @@ corecoder/
 └── tools/
     ├── sandbox_tool.py  execute_in_sandbox（取代 bash） 165 行
     ├── sync_tool.py     sync_workspace（拉回变更）      90 行
+    ├── grep_search.py   rg 优先正则搜索 + Python 兜底    230 行   ← Phase 2
+    ├── list_files.py    glob 找文件（符号链接安全）      90 行    ← Phase 2
+    ├── read_file.py     读取 + 区间 + 300 行上限         140 行
+    ├── path_guard.py    共用路径穿越/符号链接闸         70 行    ← Phase 2
     ├── workspace_path.py  /workspace 路径映射           55 行
     ├── bash.py       预检正则闸（保留作辅助）          127 行
     ├── edit.py       唯一匹配搜索替换 + diff            92 行
-    ├── grep.py       内容搜索                           79 行
-    ├── glob_tool.py  文件名匹配                         47 行
-    ├── read.py       文件读取                           53 行
+    ├── grep.py       内容搜索（旧）                     79 行
+    ├── glob_tool.py  文件名匹配（旧）                   47 行
     ├── write.py      文件写入                           38 行
     ├── agent.py      子 agent 派生                      58 行
     └── base.py       工具基类                           27 行
 ```
 
-（容器镜像本身由仓库根目录的 `sandbox/Dockerfile` 构建。）九个工具：`execute_in_sandbox`（`bash` 的沙箱版继任者）、`sync_workspace`（拉回沙箱变更）、`read_file`、`write_file`、`edit_file`、`glob`、`grep`、`agent`（派子 agent）、`fetch_url`。其余都是包在引擎核心外面的 CLI 外壳、配置和打包。
+（容器镜像本身由仓库根目录的 `sandbox/Dockerfile` 构建。）十一个工具：`execute_in_sandbox`（`bash` 的沙箱版继任者）、`sync_workspace`（拉回沙箱变更）、`grep_search` 与 `list_files`（Phase 2 纯工具驱动搜索对：零索引、零向量、路径受控、rg 优先 + 纯 Python 兜底）、`read_file`、`write_file`、`edit_file`、`glob`、`grep`、`agent`（派子 agent）、`fetch_url`。搜索策略在 `prompts/search_strategy.py`。其余都是包在引擎核心外面的 CLI 外壳、配置和打包。
 
 ## 一个 while 循环就是 agent 的本体
 
@@ -247,7 +250,7 @@ quit / exit      退出（Ctrl+C 取消当前回合）
 
 ## 贡献 / License
 
-动手之前先跑一遍 `pytest tests/ -q`（159 个测试）、`ruff check` 和 `compileall`，绿了再提。Docker 沙箱测试需要先构建一次镜像：`docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`。MIT License，欢迎 fork 拿去造更好的东西，能在 README 里留一句出处就更好。
+动手之前先跑一遍 `pytest tests/ -q`（192 个测试）、`ruff check` 和 `compileall`，绿了再提。Docker 沙箱测试需要先构建一次镜像：`docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`。MIT License，欢迎 fork 拿去造更好的东西，能在 README 里留一句出处就更好。
 
 ---
 

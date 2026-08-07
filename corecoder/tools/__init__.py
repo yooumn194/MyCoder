@@ -1,12 +1,14 @@
 """Tool registry."""
 
-from .read import ReadFileTool
+from .read_file import ReadFileTool
 from .write import WriteFileTool
 from .edit import EditFileTool
 from .glob_tool import GlobTool
 from .grep import GrepTool
 from .agent import AgentTool
 from .fetch import FetchUrlTool
+from .grep_search import GrepSearchTool
+from .list_files import ListFilesTool
 from .sandbox_tool import ExecuteInSandboxTool
 from .sync_tool import SyncWorkspaceTool
 
@@ -15,9 +17,13 @@ ALL_TOOLS = [
     # The old `bash` tool (regex-blacklist gated, runs on the host) is replaced
     # by the sandboxed executor: same contract, isolated by Docker, with a
     # user-confirmed local fallback. sync_workspace pulls the sandbox's
-    # /workspace changes back to the host. corecoder/agent.py needs no changes.
+    # /workspace changes back to the host. grep_search / list_files are the
+    # Phase 2 agentic-search tools (path-guarded, rg-first). corecoder/agent.py
+    # needs no changes.
     ExecuteInSandboxTool(),
     SyncWorkspaceTool(),
+    GrepSearchTool(),
+    ListFilesTool(),
     ReadFileTool(),
     WriteFileTool(),
     EditFileTool(),

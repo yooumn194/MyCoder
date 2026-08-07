@@ -194,6 +194,11 @@ def set_active_manager(manager: SandboxManager | None) -> None:
     _active_manager = manager
 
 
+def get_active_manager() -> SandboxManager | None:
+    """The manager the sandbox tools are currently using, if any."""
+    return _active_manager
+
+
 def get_active_sync() -> WorkspaceSync | None:
     """The current manager's WorkspaceSync, or None (no Docker sandbox).
 

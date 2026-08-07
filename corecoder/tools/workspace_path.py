@@ -8,10 +8,25 @@ container: after sandbox.stop() the container is gone but the volume — and
 therefore the mapping — stays valid.
 """
 
+import os
 from pathlib import Path
 
 from ..sandbox import run_async
-from ..sandbox.executor import get_active_sync
+from ..sandbox.executor import get_active_manager, get_active_sync
+
+
+def get_project_root() -> Path:
+    """The project root the host-side tools operate on.
+
+    When a sandbox session is active this is the host project directory it
+    mounts (Phase 1's project dir); otherwise it falls back to the current
+    working directory. PathGuard validates every user-supplied path against
+    this root.
+    """
+    manager = get_active_manager()
+    if manager is not None:
+        return manager.project_dir
+    return Path(os.getcwd())
 
 
 def resolve_workspace_path(file_path: str) -> Path:

@@ -12,6 +12,8 @@ def test_tool_count():
     assert {t.name for t in ALL_TOOLS} == {
         "execute_in_sandbox",
         "sync_workspace",
+        "grep_search",
+        "list_files",
         "read_file",
         "write_file",
         "edit_file",
@@ -146,49 +148,54 @@ def test_sandbox_truncates_long_output(local_sandbox_tool):
     assert "truncated" in r
 
 
-# --- read_file ---
+# --- read_file (Phase 2: project-rooted, 300-line cap, '42 | line' format) ---
 
-def test_read_file(tmp_path):
-    read = get_tool("read_file")
+@pytest.fixture()
+def rooted_read(tmp_path):
+    """A read_file instance scoped to a temp project root (PathGuard requires
+    every read to stay inside the project)."""
+    from corecoder.tools.read_file import ReadFileTool
+
+    return ReadFileTool(project_root=tmp_path)
+
+
+def test_read_file(rooted_read, tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("line1\nline2\nline3\n")
-    r = read.execute(file_path=str(path))
+    r = rooted_read.execute(file_path="sample.txt")
     assert "line1" in r
     assert "line2" in r
 
 
-def test_read_file_not_found():
-    read = get_tool("read_file")
-    r = read.execute(file_path="/tmp/corecoder_nonexistent_file.txt")
-    assert "not found" in r.lower() or "Error" in r
+def test_read_file_not_found(rooted_read):
+    r = rooted_read.execute(file_path="no_such_file.txt")
+    assert "不存在" in r
 
 
-def test_read_file_offset_limit(tmp_path):
-    read = get_tool("read_file")
+def test_read_file_start_end_line(rooted_read, tmp_path):
     path = tmp_path / "sample.txt"
     path.write_text("\n".join(f"line{i}" for i in range(100)), encoding="utf-8")
-    r = read.execute(file_path=str(path), offset=10, limit=5)
-    # offset is 1-based: row label 10 carries content "line9"
-    assert "10\tline9" in r
+    r = rooted_read.execute(file_path="sample.txt", start_line=10, end_line=14)
+    # start_line is 1-based: row label 10 carries content "line9"
+    assert "10 | line9" in r
     assert "line8" not in r   # before the window
-    assert "line14" not in r  # 5-line limit stops at content line13
+    assert "line15" not in r  # end_line 14 stops at content line14
 
 
-def test_read_write_unicode_roundtrip(tmp_path):
+def test_read_write_unicode_roundtrip(rooted_read, tmp_path):
     """Non-ASCII content must survive write->read as UTF-8 regardless of OS locale.
 
     (Line endings may be normalised to \\r\\n on Windows - that's text-mode
     behaviour orthogonal to the encoding, so this checks content, not raw bytes.)
     """
     write = get_tool("write_file")
-    read = get_tool("read_file")
     path = tmp_path / "zh.txt"
     write.execute(file_path=str(path), content="第一行\n第二行\n")
     raw = path.read_bytes()
     assert "第一行".encode("utf-8") in raw  # genuinely UTF-8 on disk, not cp936
     assert "第二行".encode("utf-8") in raw
     assert path.read_text(encoding="utf-8").splitlines() == ["第一行", "第二行"]
-    r = read.execute(file_path=str(path))
+    r = rooted_read.execute(file_path="zh.txt")
     assert "第一行" in r and "第二行" in r
 
 

@@ -38,7 +38,7 @@ I've always felt coding agents get talked about as if they were arcane. Strip a 
 
 The engine (loop, model interface, context, tools, sessions) is 1,081 lines once you drop blank lines and comments. Counting the outer CLI, config and packaging too, the whole package is 18 files: 1,714 physical lines, 1,385 net, every one short enough to read in a single sitting.
 
-And it really runs: reads and writes files, executes shell in a sandbox, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. 159 tests, all green (the container integration tests skip themselves when Docker is unavailable). But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
+And it really runs: reads and writes files, executes shell in a sandbox, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. 192 tests, all green (the container integration tests skip themselves when Docker is unavailable). But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
 
 The code came out of a public teardown: open analyses have already exposed a lot of the load-bearing architecture inside production agents like Claude Code. I took the most essential layer and rewrote it honestly, in as little code as I could. So reading CoreCoder is roughly like reading a runnable, annotated take on how that kind of agent works, except it's only a minimal reimplementation, sitting right there on your machine for you to take apart and change.
 
@@ -162,18 +162,21 @@ corecoder/
 └── tools/
     ├── sandbox_tool.py  execute_in_sandbox (replaces bash) 165 lines
     ├── sync_tool.py     sync_workspace (pull changes back)  90 lines
+    ├── grep_search.py   rg-first regex search + fallback    230 lines   ← Phase 2
+    ├── list_files.py    glob file lookup (symlink-safe)      90 lines    ← Phase 2
+    ├── read_file.py     read + ranges + 300-line cap         140 lines
+    ├── path_guard.py    shared path-traversal/symlink gate    70 lines   ← Phase 2
     ├── workspace_path.py  /workspace path mapping          55 lines
     ├── bash.py       pre-check regex gate (kept as helper) 127 lines
     ├── edit.py       unique-match search/replace + diff    92 lines
-    ├── grep.py       content search                        79 lines
-    ├── glob_tool.py  filename matching                     47 lines
-    ├── read.py       file read                             53 lines
+    ├── grep.py       content search (legacy)               79 lines
+    ├── glob_tool.py  filename matching (legacy)            47 lines
     ├── write.py      file write                            38 lines
     ├── agent.py      sub-agent spawning                    58 lines
     └── base.py       tool base class                       27 lines
 ```
 
-(The container image itself is built from `sandbox/Dockerfile` at the repo root.) Eight tools: `execute_in_sandbox` (the sandboxed successor to `bash`), `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `agent` (which spawns a sub-agent), and `fetch_url`. Everything else is the CLI shell, config, and packaging wrapped around that engine core.
+(The container image itself is built from `sandbox/Dockerfile` at the repo root.) Eleven tools: `execute_in_sandbox` (the sandboxed successor to `bash`), `sync_workspace`, `grep_search` and `list_files` (the Phase 2 agentic-search pair: zero index, zero embedding, path-guarded, ripgrep-first with a pure-Python fallback), `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `agent` (which spawns a sub-agent), and `fetch_url`. The search strategy lives in `prompts/search_strategy.py`. Everything else is the CLI shell, config, and packaging wrapped around that engine core.
 
 ## A `while` loop is the whole agent
 
@@ -271,7 +274,7 @@ If working through CoreCoder was useful, here are a few other tools I've built a
 
 ## Contributing / License
 
-Before you send anything, run `pytest tests/ -q` (159 tests), `ruff check`, and `compileall`, and make sure they're green. The Docker-backed sandbox tests need the image built once: `docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`. MIT licensed: fork it, learn from it, ship something better. A mention of this project is appreciated.
+Before you send anything, run `pytest tests/ -q` (192 tests), `ruff check`, and `compileall`, and make sure they're green. The Docker-backed sandbox tests need the image built once: `docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`. MIT licensed: fork it, learn from it, ship something better. A mention of this project is appreciated.
 
 ---
 
