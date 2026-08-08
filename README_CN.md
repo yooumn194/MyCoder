@@ -38,7 +38,7 @@ nanoGPT 那一列是拿来对照的：它最小、可读，但教的是训一个
 
 引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1081 行。连最外层的 CLI、配置、打包一起算，整个包 18 个文件、物理 1714 行、净 1385 行，每个文件都短到能一口气读完。
 
-它真能跑：读写文件、在沙箱里执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你，192 个测试是绿的（容器集成测试在 Docker 不可用时自动跳过）。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
+它真能跑：读写文件、在沙箱里执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你，239 个测试是绿的（容器集成测试在 Docker 不可用时自动跳过）。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
 
 代码来自一次公开拆解。公开的源码分析里，Claude Code 这类生产级 agent 暴露出不少关键架构，我挑出最核心的一层，用尽量少的代码诚实地复写了一遍。所以读 CoreCoder，约等于读一份基于公开源码分析的「可运行注释版」：讲的是这类 agent 的核心思路，而它本身只是最小复写，就摆在你机器上，随你拆、随你改。
 
@@ -115,20 +115,35 @@ docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/
 
 Docker 不可用时不会崩，而是**优雅降级**：默认**拒绝**（fail closed），只有在你确认之后，才允许带白名单、超时和 WARNING 审计日志在本机跑命令；无人值守场景用 `CORECODER_ALLOW_LOCAL_EXEC=1` 显式开启。
 
+### Phase 3：规划 · 修正 · 路由
+
+Phase 3 把 agent 从「优秀执行者」升级成「聪明决策者」：
+
+- **`todo_write` / `todo_update`** 创建结构化计划并把步骤标记为 `in_progress` / `done`。无效计划（循环依赖、悬空依赖）在污染上下文之前就被拒绝。
+- **规划守卫** 在工具调度层拦截：一旦有活跃计划，修改类工具必须等当前步骤 `in_progress`；设 `CORECODER_ENFORCE_PLANNING=1` 可进一步做到「无计划即拦截修改」。
+- **自我修正** 用确定性规则分类工具失败（瞬态→加长超时重试、OOM→快速失败、权限→交给用户），而不是盲目重试。
+- **`ModelRouter`** 按 `config/model_routing.yaml`（热重载）把任务路由到模型 tier；可用 `CORECODER_MODEL_TIER` 覆盖。
+- **MCP Lite** 是预埋的 stdio MCP 客户端，超时抛结构化错误、修正循环可识别（Phase 3.5 接真实服务器）。
+
+其它可调项：`CORECODER_CONFIRM_TIMEOUT`（默认 `60`，确认提示的等待上限）；`grep_search` 无 `rg` 时走纯 Python 兜底——大仓库上约慢 10–50 倍，输出一致。
+
 ## 读懂它：代码地图
 
 整个项目摊开就这么大，clone 之前扫一眼，心里就有数了。这也是它和 Claude Code 几十万行最实在的区别：你能把它当一本书的目录来读。建议从 `agent.py` 的主循环读起，那是整个 agent 的心脏。
 
 ```
 corecoder/
-├── agent.py        agent 主循环 + 并行工具执行       150 行   ← 从这里开始读
+├── agent.py        agent 主循环 + 并行工具执行       155 行   ← 从这里开始读
 ├── llm.py          流式客户端 + 重试 + 成本统计       336 行
 ├── context.py      三层上下文压缩                     210 行
 ├── session.py      会话存盘 / 续聊 + 路径穿越防护      97 行
-├── prompt.py       系统提示词                          33 行
+├── prompt.py       系统提示词 + 搜索策略                40 行
+├── prompts/        可复用提示片段                      35 行   ← Phase 2
 ├── cli.py          REPL + 斜杠命令 + 一次性模式        270 行
 ├── config.py       环境变量配置                        57 行
-├── sandbox/        Docker 容器命令隔离                ~1200 行   ← 新增
+├── planner.py      规划引擎（Todo/Plan/Guard）         243 行   ← Phase 3
+├── model_router.py 任务→模型 tier 路由（YAML）          104 行   ← Phase 3
+├── sandbox/        Docker 容器命令隔离                ~1200 行   ← Phase 1
 │   ├── docker_executor.py  加固容器生命周期           440 行
 │   ├── executor.py         后端选择 + 优雅降级        230 行
 │   ├── sync.py             /workspace ↔ 宿主增量同步   160 行
@@ -142,6 +157,9 @@ corecoder/
     ├── list_files.py    glob 找文件（符号链接安全）      90 行    ← Phase 2
     ├── read_file.py     读取 + 区间 + 300 行上限         140 行
     ├── path_guard.py    共用路径穿越/符号链接闸         70 行    ← Phase 2
+    ├── todo_tools.py    todo_write / todo_update        128 行   ← Phase 3
+    ├── correction.py    错误→策略自我修正                125 行   ← Phase 3
+    ├── mcp_lite.py      MCP 客户端 + 结构化超时          128 行   ← Phase 3
     ├── workspace_path.py  /workspace 路径映射           55 行
     ├── bash.py       预检正则闸（保留作辅助）          127 行
     ├── edit.py       唯一匹配搜索替换 + diff            92 行
@@ -152,7 +170,7 @@ corecoder/
     └── base.py       工具基类                           27 行
 ```
 
-（容器镜像本身由仓库根目录的 `sandbox/Dockerfile` 构建。）十一个工具：`execute_in_sandbox`（`bash` 的沙箱版继任者）、`sync_workspace`（拉回沙箱变更）、`grep_search` 与 `list_files`（Phase 2 纯工具驱动搜索对：零索引、零向量、路径受控、rg 优先 + 纯 Python 兜底）、`read_file`、`write_file`、`edit_file`、`glob`、`grep`、`agent`（派子 agent）、`fetch_url`。搜索策略在 `prompts/search_strategy.py`。其余都是包在引擎核心外面的 CLI 外壳、配置和打包。
+（容器镜像本身由仓库根目录的 `sandbox/Dockerfile` 构建。）十三个工具：`execute_in_sandbox`（`bash` 的沙箱版继任者）、`sync_workspace`（拉回沙箱变更）、`grep_search` 与 `list_files`（Phase 2 纯工具驱动搜索对：零索引、零向量、路径受控、rg 优先 + 纯 Python 兜底）、`todo_write` 与 `todo_update`（Phase 3 规划对）、`read_file`、`write_file`、`edit_file`、`glob`、`grep`、`agent`（派子 agent）、`fetch_url`。搜索策略在 `prompts/search_strategy.py`；模型路由规则在 `config/model_routing.yaml`。其余都是包在引擎核心外面的 CLI 外壳、配置和打包。
 
 ## 一个 while 循环就是 agent 的本体
 
@@ -250,7 +268,7 @@ quit / exit      退出（Ctrl+C 取消当前回合）
 
 ## 贡献 / License
 
-动手之前先跑一遍 `pytest tests/ -q`（192 个测试）、`ruff check` 和 `compileall`，绿了再提。Docker 沙箱测试需要先构建一次镜像：`docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`。MIT License，欢迎 fork 拿去造更好的东西，能在 README 里留一句出处就更好。
+动手之前先跑一遍 `pytest tests/ -q`（239 个测试）、`ruff check` 和 `compileall`，绿了再提。Docker 沙箱测试需要先构建一次镜像：`docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`。MIT License，欢迎 fork 拿去造更好的东西，能在 README 里留一句出处就更好。
 
 ---
 

@@ -38,7 +38,7 @@ I've always felt coding agents get talked about as if they were arcane. Strip a 
 
 The engine (loop, model interface, context, tools, sessions) is 1,081 lines once you drop blank lines and comments. Counting the outer CLI, config and packaging too, the whole package is 18 files: 1,714 physical lines, 1,385 net, every one short enough to read in a single sitting.
 
-And it really runs: reads and writes files, executes shell in a sandbox, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. 192 tests, all green (the container integration tests skip themselves when Docker is unavailable). But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
+And it really runs: reads and writes files, executes shell in a sandbox, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. 239 tests, all green (the container integration tests skip themselves when Docker is unavailable). But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
 
 The code came out of a public teardown: open analyses have already exposed a lot of the load-bearing architecture inside production agents like Claude Code. I took the most essential layer and rewrote it honestly, in as little code as I could. So reading CoreCoder is roughly like reading a runnable, annotated take on how that kind of agent works, except it's only a minimal reimplementation, sitting right there on your machine for you to take apart and change.
 
@@ -139,23 +139,50 @@ If Docker isn't reachable the agent degrades gracefully instead of dying: it
 allowlist, a timeout, and a WARNING audit log after you confirm — set
 `CORECODER_ALLOW_LOCAL_EXEC=1` for unattended opt-in.
 
+### Phase 3: plan, correct, route
+
+The Phase 3 pass turns the agent from an excellent executor into a deliberate
+decision-maker:
+
+- **`todo_write` / `todo_update`** create a structured plan and mark steps
+  `in_progress` / `done`. Invalid plans (cycles, dangling dependencies) are
+  rejected before they pollute context.
+- **A planning guard** in the dispatch layer blocks a mutation tool when the
+  current step isn't `in_progress` (once a plan exists); set
+  `CORECODER_ENFORCE_PLANNING=1` to also block mutations when no plan exists.
+- **Self-correction** classifies tool failures deterministically (transient →
+  retry with a longer timeout, OOM → fail fast, permission → escalate to the
+  user) instead of blindly retrying.
+- **`ModelRouter`** maps a task to a model tier via `config/model_routing.yaml`
+  (hot-reloaded; override the tier with `CORECODER_MODEL_TIER`).
+- **MCP Lite** is a pre-wired stdio MCP client whose timeouts raise a
+  structured error the correction loop understands (Phase 3.5 wires real
+  servers).
+
+Other tunables: `CORECODER_CONFIRM_TIMEOUT` (default `60`, the confirmation
+prompt deadline) and, for `grep_search`, note that without `rg` the pure-Python
+fallback is used — roughly 10–50× slower on large trees, identical output.
+
 ## Read it: the code map
 
 Laid out flat, the whole project is this big. Skim it before you clone and you'll know where everything is. This is the most concrete difference from Claude Code's hundreds of thousands of lines: you can read it like the table of contents of a book. Start from the main loop in `agent.py`; that's the heart of the whole agent.
 
 ```
 corecoder/
-├── agent.py        agent loop + parallel tool exec       150 lines   ← start here
+├── agent.py        agent loop + parallel tool exec       155 lines   ← start here
 ├── llm.py          streaming client + retry + cost        336 lines
 ├── context.py      three-tier context compaction          210 lines
 ├── session.py      save / resume + path-traversal guard    97 lines
-├── prompt.py       system prompt                           33 lines
+├── prompt.py       system prompt + search strategy         40 lines
+├── prompts/        reusable prompt segments                35 lines   ← Phase 2
 ├── cli.py          REPL + slash commands + one-shot       270 lines
 ├── config.py       env-var config                          57 lines
-├── sandbox/        Docker-backed command isolation        ~1200 lines   ← new
+├── planner.py      planning engine (Todo/Plan/Guard)      243 lines   ← Phase 3
+├── model_router.py task→model-tier routing (YAML)         104 lines   ← Phase 3
+├── sandbox/        Docker-backed command isolation        ~1200 lines   ← Phase 1
 │   ├── docker_executor.py  hardened container lifecycle   440 lines
 │   ├── executor.py         backend selection + fallback   230 lines
-│   ├── sync.py             /workspace <-> host incremental sync  160 lines
+│   ├── sync.py             /workspace <-> host sync       160 lines
 │   ├── policy.py           permission confirm + cache    230 lines
 │   ├── local_executor.py   degraded host allowlist        160 lines
 │   └── logger.py·models.py·locking.py                      90 lines
@@ -166,6 +193,9 @@ corecoder/
     ├── list_files.py    glob file lookup (symlink-safe)      90 lines    ← Phase 2
     ├── read_file.py     read + ranges + 300-line cap         140 lines
     ├── path_guard.py    shared path-traversal/symlink gate    70 lines   ← Phase 2
+    ├── todo_tools.py    todo_write / todo_update (planning)  128 lines   ← Phase 3
+    ├── correction.py    error→strategy self-correction       125 lines   ← Phase 3
+    ├── mcp_lite.py      MCP client + structured timeouts     128 lines   ← Phase 3
     ├── workspace_path.py  /workspace path mapping          55 lines
     ├── bash.py       pre-check regex gate (kept as helper) 127 lines
     ├── edit.py       unique-match search/replace + diff    92 lines
@@ -176,7 +206,7 @@ corecoder/
     └── base.py       tool base class                       27 lines
 ```
 
-(The container image itself is built from `sandbox/Dockerfile` at the repo root.) Eleven tools: `execute_in_sandbox` (the sandboxed successor to `bash`), `sync_workspace`, `grep_search` and `list_files` (the Phase 2 agentic-search pair: zero index, zero embedding, path-guarded, ripgrep-first with a pure-Python fallback), `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `agent` (which spawns a sub-agent), and `fetch_url`. The search strategy lives in `prompts/search_strategy.py`. Everything else is the CLI shell, config, and packaging wrapped around that engine core.
+(The container image itself is built from `sandbox/Dockerfile` at the repo root.) Thirteen tools: `execute_in_sandbox` (the sandboxed successor to `bash`), `sync_workspace`, `grep_search` and `list_files` (the Phase 2 agentic-search pair: zero index, zero embedding, path-guarded, ripgrep-first with a pure-Python fallback), `todo_write` and `todo_update` (the Phase 3 planning pair), `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `agent` (which spawns a sub-agent), and `fetch_url`. The search strategy lives in `prompts/search_strategy.py`; the model-routing rules in `config/model_routing.yaml`. Everything else is the CLI shell, config, and packaging wrapped around that engine core.
 
 ## A `while` loop is the whole agent
 
@@ -274,7 +304,7 @@ If working through CoreCoder was useful, here are a few other tools I've built a
 
 ## Contributing / License
 
-Before you send anything, run `pytest tests/ -q` (192 tests), `ruff check`, and `compileall`, and make sure they're green. The Docker-backed sandbox tests need the image built once: `docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`. MIT licensed: fork it, learn from it, ship something better. A mention of this project is appreciated.
+Before you send anything, run `pytest tests/ -q` (239 tests), `ruff check`, and `compileall`, and make sure they're green. The Docker-backed sandbox tests need the image built once: `docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`. MIT licensed: fork it, learn from it, ship something better. A mention of this project is appreciated.
 
 ---
 
