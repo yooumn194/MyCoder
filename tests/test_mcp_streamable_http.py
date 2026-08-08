@@ -83,6 +83,40 @@ async def test_streamable_http_timeout():
     await server.app.cleanup()
 
 
+async def test_streamable_http_json_response():
+    """P1-3: application/json response is parsed directly (stateless mode)."""
+
+    async def _json_handler(request):
+        data = await request.json()
+        return web.json_response({"jsonrpc": "2.0", "id": data["id"], "result": {"echo": data.get("method")}})
+
+    server = _StreamServer(handler=_json_handler)
+    url = await _start(server)
+    t = StreamableHTTPTransport(url, name="test", timeout=5)
+    await t.start()
+    try:
+        r = await t.send_request("ping", {})
+        assert r["echo"] == "ping"
+    finally:
+        await t.close()
+    await server.app.cleanup()
+
+
+async def test_streamable_http_response_mode_auto():
+    """auto mode routes by Content-Type: JSON body -> direct parse, SSE -> stream."""
+    # the default _StreamServer returns text/event-stream -> SSE path still works
+    server = _StreamServer()
+    url = await _start(server)
+    t = StreamableHTTPTransport(url, name="test", timeout=5, response_mode="auto")
+    await t.start()
+    try:
+        r = await t.send_request("tools/list", {})
+        assert r["echo"] == "tools/list"
+    finally:
+        await t.close()
+    await server.app.cleanup()
+
+
 async def test_streamable_http_http_error():
     async def _bad(request):
         return web.Response(status=500)

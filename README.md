@@ -38,7 +38,7 @@ I've always felt coding agents get talked about as if they were arcane. Strip a 
 
 The engine (loop, model interface, context, tools, sessions) is 1,081 lines once you drop blank lines and comments. Counting the outer CLI, config and packaging too, the whole package is 18 files: 1,714 physical lines, 1,385 net, every one short enough to read in a single sitting.
 
-And it really runs: reads and writes files, executes shell in a sandbox, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. 376 tests, all green (the container integration tests skip themselves when Docker is unavailable). But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
+And it really runs: reads and writes files, executes shell in a sandbox, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. 396 tests, all green (the container integration tests skip themselves when Docker is unavailable). But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
 
 The code came out of a public teardown: open analyses have already exposed a lot of the load-bearing architecture inside production agents like Claude Code. I took the most essential layer and rewrote it honestly, in as little code as I could. So reading CoreCoder is roughly like reading a runnable, annotated take on how that kind of agent works, except it's only a minimal reimplementation, sitting right there on your machine for you to take apart and change.
 
@@ -185,6 +185,32 @@ transport is pure standard library. SSE needs `aiohttp` — install it with
 use SSE). aiohttp over httpx: SSE streaming support is more mature and
 connection reuse is easier to control; a future switch to httpx + anyio is a
 low-risk, low-priority option.
+
+**Migrate from SSE to Streamable HTTP** (MCP 2025-03-26 supersedes SSE).
+
+| Old (SSE) | New (Streamable HTTP) |
+|---|---|
+| `transport: sse` + `sse_endpoint` / `post_endpoint` | `transport: streamable_http` + a single `endpoint` |
+
+```yaml
+# old
+servers:
+  github:
+    transport: sse
+    sse_endpoint: https://mcp.github.com/sse
+    post_endpoint: https://mcp.github.com/messages
+# new
+servers:
+  github:
+    transport: streamable_http
+    endpoint: https://mcp.github.com/api/v1
+```
+
+Behavioral differences: SSE uses a separate GET event stream + POST requests;
+Streamable HTTP uses one POST endpoint whose response body IS the SSE stream
+(and supports the 202 Accepted semantic). The SSE transport still works but
+logs a deprecation warning. Timeline: deprecated in v0.4.x, disabled by
+default in v0.5.0, removed in v1.0.0.
 
 ### Phase 4: system intelligence
 
@@ -350,7 +376,7 @@ If working through CoreCoder was useful, here are a few other tools I've built a
 
 ## Contributing / License
 
-Before you send anything, run `pytest tests/ -q` (376 tests), `ruff check`, and `compileall`, and make sure they're green. The Docker-backed sandbox tests need the image built once: `docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`. MIT licensed: fork it, learn from it, ship something better. A mention of this project is appreciated.
+Before you send anything, run `pytest tests/ -q` (396 tests), `ruff check`, and `compileall`, and make sure they're green. The Docker-backed sandbox tests need the image built once: `docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`. MIT licensed: fork it, learn from it, ship something better. A mention of this project is appreciated.
 
 ---
 

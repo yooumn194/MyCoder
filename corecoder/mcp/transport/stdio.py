@@ -36,12 +36,19 @@ class StdioTransport:
         *,
         name: str = "stdio",
         timeout: float = 30.0,
+        warmup: bool = False,
+        warmup_timeout: float = 30.0,
     ) -> None:
         self._command = command
         self._args = list(args or [])
         self._env = {**os.environ, **(env or {})}
         self.name = name
         self._timeout = timeout
+        # P0-3: warm the server (full initialize handshake) at start() so the
+        # first LSP tool call has no 2-5s cold-start delay.
+        self._warmup = warmup
+        self._warmup_timeout = warmup_timeout
+        self._is_warmed_up = False
         self._process: asyncio.subprocess.Process | None = None
         self._pending: dict[str, asyncio.Future] = {}
         self._request_queue: asyncio.Queue = asyncio.Queue()
@@ -66,6 +73,39 @@ class StdioTransport:
         self._reader_task = asyncio.create_task(self._read_loop())
         self._writer_task = asyncio.create_task(self._write_loop())
         self._stderr_task = asyncio.create_task(self._stderr_capture())
+        if self._warmup:
+            self._is_warmed_up = await self._warmup_handshake()
+
+    async def _warmup_handshake(self) -> bool:
+        """Complete the initialize handshake now. Returns True on success.
+
+        A timeout only logs and the server is retried on first use
+        (fail-open for the warmup path only) — but the warmed-up flag must not
+        be set, so callers know the server was NOT pre-warmed.
+        """
+        try:
+            await asyncio.wait_for(
+                self.send_request(
+                    "initialize",
+                    {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {"roots": {"listChanged": True}},
+                        "clientInfo": {"name": "corecoder", "version": "0.4.0"},
+                    },
+                ),
+                timeout=self._warmup_timeout,
+            )
+            await self.send_notification("notifications/initialized", {})
+            logger.info("mcp_warmup_ok", server=self.name, command=self._command)
+            return True
+        except asyncio.TimeoutError:
+            logger.warning(
+                "mcp_warmup_timeout",
+                server=self.name,
+                command=self._command,
+                timeout=self._warmup_timeout,
+            )
+            return False
 
     async def handshake(self) -> dict:
         """MCP initialize handshake — the server must answer or we fail fast."""

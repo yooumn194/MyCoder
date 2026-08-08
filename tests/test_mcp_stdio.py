@@ -16,6 +16,44 @@ def _make_transport(tmp_path, **kw):
     return StdioTransport("python3", [server], name="fake", timeout=5, **kw)
 
 
+# --- P0-3: warmup -----------------------------------------------------------
+
+async def test_lsp_warmup_success(tmp_path):
+    """warmup=True completes the initialize handshake at start()."""
+    t = StdioTransport("python3", [write_fake_server(tmp_path)],
+                       name="fake", timeout=5, warmup=True, warmup_timeout=3)
+    await t.start()
+    assert t._is_warmed_up is True
+    # the server is ready — a follow-up tools/list works instantly
+    tools = await t.send_request("tools/list", {})
+    assert tools["tools"]
+    await t.shutdown(graceful=False)
+
+
+async def test_lsp_warmup_timeout_graceful(tmp_path):
+    """A server that ignores initialize -> warmup times out but start() survives."""
+    script = tmp_path / "silent.py"
+    script.write_text(
+        "import sys, time\n"
+        "while True:\n"
+        "    time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    t = StdioTransport("python3", [str(script)], name="fake",
+                       timeout=5, warmup=True, warmup_timeout=0.2)
+    await t.start()  # must not raise
+    assert t._is_warmed_up is False  # degraded gracefully
+    await t.shutdown(graceful=False)
+
+
+def test_lsp_config_has_warmup_flag():
+    from corecoder.mcp.config import load_mcp_config
+
+    config = load_mcp_config()
+    lsp = config["servers"]["lsp"]
+    assert lsp.get("warmup") is True
+
+
 # ---------------------------------------------------------------------------
 # framing: sticky / half packets (unit-level, no subprocess)
 # ---------------------------------------------------------------------------

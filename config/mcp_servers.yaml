@@ -40,6 +40,8 @@ servers:
     command: npx
     args: ["-y", "mcp-server-lsp"]
     enabled: false
+    warmup: true        # P0-3: 启动时预热（消除首次调用的 2-5s 冷启动延迟）
+    warmup_timeout: 30  # 预热超时（秒），超时优雅降级、首次调用再试
     env:
       LSP_SERVERS: |
         {

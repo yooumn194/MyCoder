@@ -20,6 +20,7 @@ from ..contracts.envelope import (
     parse_envelope,
 )
 from .definition import SubagentDefinition
+from .tool_validator import ToolOutputValidator
 
 
 class SubagentRunner:
@@ -31,6 +32,7 @@ class SubagentRunner:
         parent_context: dict,
         instance_id: Optional[str] = None,
         executor: Optional[Callable[[str, str], Any]] = None,
+        tool_validator: Optional[ToolOutputValidator] = None,
     ) -> None:
         self.definition = definition
         self.task = task
@@ -40,6 +42,8 @@ class SubagentRunner:
         # executor(task, system_prompt) -> dict; injectable for tests so the
         # Runner needs no real LLM. Default spawns a sub-Agent.
         self._executor = executor
+        # P0-1: tool-output contract validation (subagent's inner tool calls)
+        self.tool_validator = tool_validator or ToolOutputValidator()
         self._start_time: Optional[float] = None
 
     async def run(self) -> SubagentResultEnvelope:

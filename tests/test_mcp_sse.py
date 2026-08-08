@@ -10,6 +10,20 @@ from corecoder.mcp.errors import MCPToolError, MCPTransportError
 from corecoder.mcp.transport.sse import SSETransport
 
 
+def test_sse_deprecation_warning(monkeypatch):
+    """P0-4: constructing the SSE transport emits a deprecation warning."""
+    from unittest import mock
+
+    from corecoder.mcp.transport import sse as sse_mod
+
+    logger = mock.Mock()
+    monkeypatch.setattr(sse_mod, "logger", logger)
+    SSETransport(sse_endpoint="https://example.com/sse", name="t")
+    warnings = [c for c in logger.warning.call_args_list if c.args and c.args[0] == "mcp_sse_deprecated"]
+    assert warnings
+    assert "deprecated" in str(warnings[0].kwargs["detail"]).lower()
+
+
 def test_sse_import_error_is_clear(monkeypatch):
     """Missing aiohttp -> a clear install hint, not a bare ImportError."""
     import builtins

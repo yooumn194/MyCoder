@@ -41,6 +41,13 @@ jobs:
       - name: Run tests
         run: python -m pytest tests/ -v
 
+      # P1-1: evaluation benchmark — reports only, never blocks merges.
+      - name: Run Phase 4 Evaluation
+        run: |
+          python -m corecoder.eval.runner --benchmark orchestration --cases 20 \
+            --report eval-report.json
+        continue-on-error: true
+
       - name: Compile
         run: python -m compileall -q corecoder tests
 

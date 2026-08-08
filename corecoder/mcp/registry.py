@@ -64,6 +64,8 @@ def _make_transport(server_cfg: dict):
             env=server_cfg.get("env"),
             name=name,
             timeout=float(server_cfg.get("timeout", 30)),
+            warmup=bool(server_cfg.get("warmup", False)),
+            warmup_timeout=float(server_cfg.get("warmup_timeout", 30)),
         )
     if transport_type == "sse":
         return SSETransport(

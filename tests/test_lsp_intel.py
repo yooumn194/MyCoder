@@ -1,7 +1,7 @@
 """Tests for Phase 4 LSP symbol intelligence (Module B)."""
 
 from corecoder.mcp.adapter import MCPToolAdapter
-from corecoder.mcp.lsp_compressor import LSPResultCompressor
+from corecoder.mcp.lsp_compressor import LSPResultCompressor, enrich_diagnostic
 from corecoder.mcp.lsp_metadata import describe_lsp_tool
 
 
@@ -112,3 +112,40 @@ def test_lsp_server_config_present():
     assert "lsp" in config["servers"]
     assert config["servers"]["lsp"]["enabled"] is False  # opt-in
     assert "lsp" in config["security"]["allowed_tools"]
+
+
+# ---------------------------------------------------------------------------
+# P0-2: diagnostic enrichment
+# ---------------------------------------------------------------------------
+
+def test_diagnostic_enrich_python():
+    diag = enrich_diagnostic({"message": "undefined name 'foo'"}, "Python")
+    assert diag["action_type"] == "import_or_define"
+    assert "导入" in diag["fix_suggestion"]
+
+
+def test_diagnostic_enrich_typescript():
+    diag = enrich_diagnostic(
+        {"message": "Type 'string' is not assignable to type 'number'"}, "TypeScript"
+    )
+    assert diag["action_type"] == "type_fix"
+    assert "类型转换" in diag["fix_suggestion"]
+    # go + unused variable
+    go = enrich_diagnostic({"message": "x declared and not used"}, "Go")
+    assert go["action_type"] == "remove_or_ignore"
+
+
+def test_diagnostic_fallback_suggestion():
+    diag = enrich_diagnostic({"message": "some weird custom error"}, "Python")
+    assert diag["action_type"] == "manual"
+    assert "请根据错误消息" in diag["fix_suggestion"]
+
+
+def test_compress_diagnostics_includes_fix():
+    out = LSPResultCompressor().compress_diagnostics(
+        [{"uri": "file:///workspace/a.ts", "range": {"start": {"line": 41}}, "severity": "error",
+          "message": "Type 'string' is not assignable to type 'number'"}],
+        language="TypeScript",
+    )
+    assert "修复建议" in out
+    assert "type_fix" in out

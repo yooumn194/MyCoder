@@ -27,7 +27,10 @@ class StreamableHTTPTransport:
         *,
         name: str = "streamable-http",
         timeout: float = 30.0,
+        response_mode: str = "auto",
     ) -> None:
+        # P1-3: auto (by Content-Type) | sse (force stream) | json (stateless)
+        self._response_mode = response_mode
         try:
             import aiohttp  # noqa: PLC0415 - lazy, like the SSE transport
         except ImportError as e:
@@ -81,7 +84,25 @@ class StreamableHTTPTransport:
                 error_type="MCPHTTPError", server=self.name, tool=method,
                 message=f"HTTP {resp.status} from {self._endpoint}",
             )
-        # 200 and 202 both carry the SSE response stream on the response body.
+        content_type = resp.headers.get("Content-Type", "")
+        want_json = self._response_mode == "json" or (
+            self._response_mode == "auto" and "application/json" in content_type
+        )
+        if want_json:
+            # P1-3: stateless JSON response — the body IS the JSON-RPC message
+            data = await resp.json()
+            await resp.release()
+            self._dispatch(data)
+            try:
+                return await asyncio.wait_for(fut, timeout=self._timeout)
+            except asyncio.TimeoutError:
+                self._pending.pop(req_id, None)
+                raise MCPToolError(
+                    error_type="MCPServerTimeout", server=self.name, tool=method,
+                    message=f"MCP server '{self.name}' 响应超时 ({self._timeout}s)",
+                ) from None
+
+        # SSE stream mode: 200 and 202 both carry the stream on the response body.
         reader = asyncio.create_task(self._read_stream(resp))
         self._readers.add(reader)
         reader.add_done_callback(self._readers.discard)

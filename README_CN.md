@@ -38,7 +38,7 @@ nanoGPT 那一列是拿来对照的：它最小、可读，但教的是训一个
 
 引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1081 行。连最外层的 CLI、配置、打包一起算，整个包 18 个文件、物理 1714 行、净 1385 行，每个文件都短到能一口气读完。
 
-它真能跑：读写文件、在沙箱里执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你，376 个测试是绿的（容器集成测试在 Docker 不可用时自动跳过）。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
+它真能跑：读写文件、在沙箱里执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你，396 个测试是绿的（容器集成测试在 Docker 不可用时自动跳过）。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
 
 代码来自一次公开拆解。公开的源码分析里，Claude Code 这类生产级 agent 暴露出不少关键架构，我挑出最核心的一层，用尽量少的代码诚实地复写了一遍。所以读 CoreCoder，约等于读一份基于公开源码分析的「可运行注释版」：讲的是这类 agent 的核心思路，而它本身只是最小复写，就摆在你机器上，随你拆、随你改。
 
@@ -132,6 +132,28 @@ Phase 3 把 agent 从「优秀执行者」升级成「聪明决策者」：
 `corecoder/mcp/` 把外部 MCP Server 暴露成普通工具（`mcp_<server>_<tool>`），协议隔离：JSON-RPC 分帧、SSE 重连、能力协商、错误码映射全部消化在 `Tool.execute(**kwargs) -> str` 背后，Planning 和 Self-Correction 零修改。两个传输层——stdio（Content-Length 分帧、崩溃重启、stderr 关联当前请求）与 SSE（双端点发现、Last-Event-ID 重放、指数退避重连）——加安全策略（按 Server 的工具白名单、参数正则如 `^/workspace/.*`）、密钥走 `token_env`、发现超时（`skip`/`partial`/`block`）、每次调用一条结构化 trace。在 `config/mcp_servers.yaml` 配置 Server（全部默认关闭，CLI 自动加载已启用的）。迁移：Phase 3 的 `tools/mcp_lite.py` 原型已被 `corecoder.mcp` 取代，其 `MCPToolError` 现在共用同一类型。
 
 **依赖说明**：MCP 层**零强制新增依赖**——stdio 传输只用标准库。SSE 传输需要 `aiohttp`（用 `pip install corecoder[mcp]` 安装；惰性导入，不用 SSE 就不必装）。选 aiohttp 而非 httpx：SSE 流式支持更成熟、连接复用更可控；未来若需进一步轻量化，可评估 httpx + anyio 组合替换，属低风险、低优先级。
+
+**从 SSE 迁移到 Streamable HTTP**（MCP 2025-03-26 已取代 SSE）。
+
+| 旧（SSE） | 新（Streamable HTTP） |
+|---|---|
+| `transport: sse` + `sse_endpoint` / `post_endpoint` | `transport: streamable_http` + 单一 `endpoint` |
+
+```yaml
+# 旧
+servers:
+  github:
+    transport: sse
+    sse_endpoint: https://mcp.github.com/sse
+    post_endpoint: https://mcp.github.com/messages
+# 新
+servers:
+  github:
+    transport: streamable_http
+    endpoint: https://mcp.github.com/api/v1
+```
+
+行为差异：SSE 用独立 GET 事件流 + POST 发请求；Streamable HTTP 用单一 POST 端点，响应体本身就是 SSE 流（并支持 202 Accepted 语义）。SSE 传输仍可用，但会打印弃用警告。时间表：v0.4.x 弃用、v0.5.0 默认禁用、v1.0.0 移除。
 
 ### Phase 4：系统智能
 
@@ -284,7 +306,7 @@ quit / exit      退出（Ctrl+C 取消当前回合）
 
 ## 贡献 / License
 
-动手之前先跑一遍 `pytest tests/ -q`（376 个测试）、`ruff check` 和 `compileall`，绿了再提。Docker 沙箱测试需要先构建一次镜像：`docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`。MIT License，欢迎 fork 拿去造更好的东西，能在 README 里留一句出处就更好。
+动手之前先跑一遍 `pytest tests/ -q`（396 个测试）、`ruff check` 和 `compileall`，绿了再提。Docker 沙箱测试需要先构建一次镜像：`docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`。MIT License，欢迎 fork 拿去造更好的东西，能在 README 里留一句出处就更好。
 
 ---
 

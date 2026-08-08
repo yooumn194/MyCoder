@@ -59,6 +59,16 @@ class SSETransport:
         self._endpoint_timeout = endpoint_timeout
         self._session = None
         self._sse_connection = None
+        # P0-4: MCP 2025-03-26 supersedes the SSE transport with Streamable HTTP.
+        logger.warning(
+            "mcp_sse_deprecated",
+            detail=(
+                "[DEPRECATION] SSE transport is deprecated as of MCP 2025-03-26. "
+                "Please migrate to the Streamable HTTP transport "
+                "(transport: streamable_http in config/mcp_servers.yaml). "
+                "See README for the migration guide."
+            ),
+        )
         self._last_event_id: str | None = None
         self._pending: dict[str, asyncio.Future] = {}
         self._endpoint_event: asyncio.Future | None = None
