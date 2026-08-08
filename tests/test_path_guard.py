@@ -73,3 +73,23 @@ def test_symlink_to_internal_file_allowed(tmp_path):
     (tmp_path / "alias").symlink_to(tmp_path / "real.txt")
     guard = PathGuard(project_root=tmp_path)
     assert guard.resolve("alias") == (tmp_path / "real.txt").resolve()
+
+
+def test_symlink_ancestor_not_false_positive(tmp_path):
+    """Regression: a project root whose LITERAL path goes through a symlink
+    (macOS /var -> /private/var) must not be rejected as a symlink escape.
+
+    The candidate's absolute ancestors (e.g. /var) are system symlinks; only
+    the user-controlled portion below the project root may be inspected.
+    """
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    proj = link / "proj"
+    (real / "proj").mkdir(parents=True)
+    (real / "proj" / "a.txt").write_text("x")
+
+    guard = PathGuard(project_root=str(proj))  # literal path via the symlink
+    resolved = guard.resolve(str(proj / "a.txt"))
+    assert resolved == (real / "proj" / "a.txt").resolve()

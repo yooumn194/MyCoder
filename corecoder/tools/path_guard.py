@@ -52,9 +52,21 @@ class PathGuard:
 
     def _check_symlink_components(self, candidate: Path, user_path: str) -> None:
         """A symlink inside the root pointing outside is caught by step 2; this
-        gives a specific, actionable message for that case."""
-        for part in candidate.parents:
-            if part == self.project_root or not part.exists():
+        gives a specific, actionable message for that case.
+
+        Only the user-controlled portion BELOW the project root is inspected.
+        Walking the whole absolute path would flag system symlinks (e.g. macOS
+        /var -> /private/var) as escapes even though the final resolved path is
+        validly inside the project — a real false-positive that surfaced on
+        paths under /var/folders.
+        """
+        try:
+            rel = candidate.relative_to(self.project_root)
+        except ValueError:
+            return  # absolute path outside the root is rejected by resolve()
+        for rel_part in reversed(rel.parents):
+            part = self.project_root / rel_part
+            if not part.exists():
                 continue
             if part.is_symlink():
                 target = part.resolve()

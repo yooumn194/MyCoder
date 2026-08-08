@@ -91,7 +91,10 @@ class GrepSearchTool(Tool):
         max_results: int = DEFAULT_MAX_RESULTS,
         case_sensitive: bool = True,
     ) -> str:
-        root = Path(self._project_root) if self._project_root else get_project_root()
+        # resolve() once so relpath() between the walked search root and the
+        # project root agree — a raw path with a symlinked ancestor (macOS
+        # /var) would otherwise produce garbage ../../ relative paths.
+        root = (Path(self._project_root) if self._project_root else get_project_root()).resolve()
         guard = PathGuard(project_root=root)
         try:
             search_root = guard.resolve(path)

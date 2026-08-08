@@ -156,6 +156,24 @@ def test_invalid_regex_reported(tmp_path):
     assert "搜索失败" in r or "(no matches)" in r
 
 
+def test_relative_paths_under_symlinked_root(tmp_path):
+    """Regression: a project root reached through a symlink (macOS /var) must
+    yield clean relative paths, not ../../ garbage (relpath root mismatch)."""
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    proj = link / "proj"
+    (real / "proj").mkdir(parents=True)
+    (real / "proj" / "a.py").write_text("def foo():\n    pass\n")
+
+    r = GrepSearchTool(project_root=str(proj), rg_path=None).execute(
+        pattern="foo", file_types="py"
+    )
+    assert "## a.py" in r
+    assert "../../" not in r
+
+
 def test_fallback_survives_non_utf8_file(tmp_path):
     """A GBK-encoded file (bytes invalid in UTF-8) must not crash the search.
 

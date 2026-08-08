@@ -48,7 +48,7 @@ class ListFilesTool(Tool):
         self._project_root = project_root
 
     def execute(self, glob_pattern: str, path: str = ".") -> str:
-        root = Path(self._project_root) if self._project_root else get_project_root()
+        root = (Path(self._project_root) if self._project_root else get_project_root()).resolve()
         guard = PathGuard(project_root=root)
         try:
             base = guard.resolve(path)
