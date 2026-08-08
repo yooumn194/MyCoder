@@ -90,6 +90,22 @@ def test_retry_modified_extends_timeout():
     assert seen[1] == 60  # timeout_multiplier 2
 
 
+def test_retry_modified_timeout_is_capped():
+    """Exponential timeout growth must never exceed MAX_RETRY_TIMEOUT."""
+    from corecoder.tools.correction import MAX_RETRY_TIMEOUT
+
+    seen = []
+
+    def _tool(**kwargs):
+        seen.append(kwargs.get("timeout"))
+        if len(seen) < 3:
+            raise TimeoutError("slow")
+        return "done"
+
+    run_with_correction(_tool, timeout=200, sleep_fn=lambda _: None)
+    assert seen == [200, MAX_RETRY_TIMEOUT, MAX_RETRY_TIMEOUT]  # 200->400->capped
+
+
 def test_gives_up_after_max_retries():
     calls = []
 

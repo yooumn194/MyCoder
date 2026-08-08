@@ -20,6 +20,11 @@ class CorrectionStrategy(str, Enum):
     FAIL_FAST = "fail_fast"             # 不可恢复错误→立即标记 failed
 
 
+# Hard cap on the timeout a RETRY_MODIFIED retry may reach. Without it, a
+# timeout=30 call retried 3x doubles to 240s and feels hung to the operator.
+MAX_RETRY_TIMEOUT = 300
+
+
 class UserEscalationError(Exception):
     """A human decision is required (permissions, ambiguous business intent)."""
 
@@ -110,10 +115,11 @@ def run_with_correction(
                     and "timeout" in kwargs
                 ):
                     kwargs = dict(kwargs)
-                    kwargs["timeout"] = max(
-                        1,
-                        int(kwargs["timeout"] * params.get("timeout_multiplier", 2)),
+                    # cap the exponential growth so retries never feel hung
+                    new_timeout = int(
+                        kwargs["timeout"] * params.get("timeout_multiplier", 2)
                     )
+                    kwargs["timeout"] = min(max(new_timeout, 1), MAX_RETRY_TIMEOUT)
                 sleep_fn(params.get("backoff", 2 ** (attempt - 1)))
                 continue
 

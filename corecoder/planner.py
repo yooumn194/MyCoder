@@ -226,6 +226,10 @@ def planning_guard(tool_name: str) -> str | None:
 
     plan = get_active_plan()
     if plan is None:
+        # 设计决策：无计划时默认放行，避免破坏 Phase 1/2 的开放式交互探索。
+        # 切换条件：当用户/系统设置 CORECODER_ENFORCE_PLANNING=1 时，无计划 +
+        # 非探索工具 → 硬拦截。未来 Phase 4 多 Agent 编排时，Orchestrator 可
+        # 强制开启此开关。这不是"忘了实现拦截"，而是有意的 soft-default。
         if enforcement_enabled():
             return (
                 "[规划拦截] 当前无活跃计划，禁止直接执行修改类工具。\n"
