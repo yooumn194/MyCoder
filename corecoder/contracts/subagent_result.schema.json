@@ -1,0 +1,104 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://schema.example.com/subagent-result-v1.0.1.json",
+  "title": "SubagentResult",
+  "version": "1.0.1",
+  "type": "object",
+  "required": ["meta", "status", "summary", "confidence"],
+  "properties": {
+    "schema_version": { "type": "string" },
+    "meta": {
+      "type": "object",
+      "required": ["task_id", "subagent_name", "subagent_instance_id", "started_at", "finished_at", "duration_ms"],
+      "properties": {
+        "task_id": { "type": "string", "description": "Globally unique task id" },
+        "subagent_name": { "type": "string" },
+        "subagent_instance_id": { "type": "string", "format": "uuid", "description": "UUID v4 injected by the orchestrator (v1.0.1)" },
+        "session_id": { "type": "string" },
+        "trace_context": {
+          "type": "object",
+          "properties": {
+            "trace_id": { "type": "string" },
+            "span_id": { "type": "string" },
+            "baggage": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        },
+        "started_at": { "type": "string", "format": "date-time" },
+        "finished_at": { "type": "string", "format": "date-time" },
+        "duration_ms": { "type": "number" },
+        "parent_tool_use_id": { "type": "string" },
+        "context_used": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "status": { "enum": ["success", "partial", "failed", "cancelled"] },
+    "summary": { "type": "string", "maxLength": 500, "description": "Orchestrator's sole decision summary" },
+    "confidence": { "enum": ["high", "medium", "low"] },
+    "completeness_ratio": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "exclusiveMaximum": 1,
+      "description": "Conditionally required: only with status=partial, and strictly 0<x<1"
+    },
+    "result": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["code_analysis", "code_generation", "code_exploration", "plan", "review", "general"] }
+      }
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "category", "retryable", "message"],
+      "properties": {
+        "code": { "type": "string", "description": "cancelled case must be 'TASK_CANCELLED'" },
+        "category": { "enum": ["transient", "permanent", "user_input_required", "system_constraint"] },
+        "retryable": { "type": "boolean" },
+        "message": { "type": "string" },
+        "details": { "type": "object" }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "input_tokens": { "type": "number" },
+        "output_tokens": { "type": "number" },
+        "total_tokens": { "type": "number" }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "maxItems": 100,
+      "description": "Workspace-relative output list; over 100 items must be noted in summary",
+      "items": {
+        "type": "object",
+        "required": ["path", "action"],
+        "properties": {
+          "path": { "type": "string", "pattern": "^(?!\\.\\./|\\.\\.\\\\|/|.*://).*$", "description": "workspace-relative, no absolute, no ../" },
+          "action": { "enum": ["created", "modified", "deleted"] },
+          "hash": { "type": "string" }
+        }
+      }
+    },
+    "suggested_next_step": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["retry", "continue", "escalate", "stop"] },
+        "target": { "type": "string" },
+        "params": {
+          "type": "object",
+          "description": "scalars or one-dimensional string arrays (max 20 items)",
+          "additionalProperties": {
+            "anyOf": [
+              { "type": "string" },
+              { "type": "number" },
+              { "type": "boolean" },
+              { "type": "array", "items": { "type": "string" }, "maxItems": 20 }
+            ]
+          }
+        },
+        "reason": { "type": "string" }
+      }
+    }
+  }
+}
