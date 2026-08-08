@@ -33,7 +33,14 @@ class MCPToolAdapter(Tool):
         self._server_name = server_name
         self._mcp_name = mcp_tool_schema.get("name", "")
         self.name = f"mcp_{server_name}_{self._mcp_name}"
-        self.description = mcp_tool_schema.get("description", "")
+        base = mcp_tool_schema.get("description", "")
+        # intent-aware descriptions for LSP tools (cognitive alignment)
+        if server_name == "lsp":
+            from .lsp_metadata import describe_lsp_tool
+
+            self.description = describe_lsp_tool(self._mcp_name, base)
+        else:
+            self.description = base
         self.parameters = self._convert_schema(mcp_tool_schema.get("inputSchema", {}))
 
     # --------------------------------------------------------------- execute

@@ -32,6 +32,22 @@ servers:
     env:
       JIRA_BASE_URL: https://mycompany.atlassian.net
 
+  # LSP symbol intelligence (Phase 4, Module B): the external lsp-mcp server
+  # wraps per-language language servers. Requires npx + the LSP servers from
+  # lsp_check.py (gopls / pylsp / typescript-language-server).
+  lsp:
+    transport: stdio
+    command: npx
+    args: ["-y", "mcp-server-lsp"]
+    enabled: false
+    env:
+      LSP_SERVERS: |
+        {
+          "python": { "command": "pylsp", "args": [] },
+          "typescript": { "command": "typescript-language-server", "args": ["--stdio"] },
+          "go": { "command": "gopls", "args": [] }
+        }
+
 discovery:
   initial_timeout: 10        # seconds; a server that doesn't answer is degraded
   fail_strategy: skip        # skip | partial | block
@@ -42,6 +58,7 @@ security:
   allowed_tools:
     filesystem: ["read_file", "write_file", "list_directory", "search_files"]
     github: ["create_issue", "list_issues", "get_pull_request"]
+    lsp: ["definition", "references", "hover", "diagnostics", "rename", "code_actions", "symbols", "workspace_symbols"]
 
   # Parameter regexes: blocks e.g. path traversal through an MCP tool.
   param_validators:

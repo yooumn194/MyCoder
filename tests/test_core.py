@@ -29,6 +29,7 @@ def test_public_api_exports():
         "glob",
         "grep",
         "agent",
+        "spawn_subagent",
         "fetch_url",
         "todo_write",
         "todo_update",

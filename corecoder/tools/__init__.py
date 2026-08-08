@@ -10,6 +10,7 @@ from .fetch import FetchUrlTool
 from .grep_search import GrepSearchTool
 from .list_files import ListFilesTool
 from .sandbox_tool import ExecuteInSandboxTool
+from .subagent_tools import SpawnSubagentTool
 from .sync_tool import SyncWorkspaceTool
 from .todo_tools import TodoUpdateTool, TodoWriteTool
 
@@ -35,6 +36,7 @@ ALL_TOOLS = [
     FetchUrlTool(),
     TodoWriteTool(),
     TodoUpdateTool(),
+    SpawnSubagentTool(),
 ]
 
 

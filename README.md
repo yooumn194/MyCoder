@@ -38,7 +38,7 @@ I've always felt coding agents get talked about as if they were arcane. Strip a 
 
 The engine (loop, model interface, context, tools, sessions) is 1,081 lines once you drop blank lines and comments. Counting the outer CLI, config and packaging too, the whole package is 18 files: 1,714 physical lines, 1,385 net, every one short enough to read in a single sitting.
 
-And it really runs: reads and writes files, executes shell in a sandbox, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. 276 tests, all green (the container integration tests skip themselves when Docker is unavailable). But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
+And it really runs: reads and writes files, executes shell in a sandbox, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. 376 tests, all green (the container integration tests skip themselves when Docker is unavailable). But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
 
 The code came out of a public teardown: open analyses have already exposed a lot of the load-bearing architecture inside production agents like Claude Code. I took the most essential layer and rewrote it honestly, in as little code as I could. So reading CoreCoder is roughly like reading a runnable, annotated take on how that kind of agent works, except it's only a minimal reimplementation, sitting right there on your machine for you to take apart and change.
 
@@ -186,6 +186,29 @@ use SSE). aiohttp over httpx: SSE streaming support is more mature and
 connection reuse is easier to control; a future switch to httpx + anyio is a
 low-risk, low-priority option.
 
+### Phase 4: system intelligence
+
+CoreCoder grows from a single smart agent into an orchestratable agent system:
+
+- **Multi-agent orchestration** (`corecoder/agents/`): `SubagentDefinition`
+  (explorer / planner / implementer / reviewer), `SubagentRunner` (isolated
+  context, timeout, token budget, returns a validated RFC v1.0.1 envelope),
+  `Blackboard` (shared KV store with TTL and `asyncio.Lock`), and an
+  `Orchestrator` (sequential / parallel / conditional strategies, circuit
+  breaker after 3 consecutive failures). The `spawn_subagent` tool exposes it
+  to the main agent.
+- **Subagent Result Contract** (`corecoder/contracts/`): the frozen RFC v1.0.1
+  envelope enforced by Pydantic — state-combination matrix, strict
+  `completeness_ratio` bounds, per-instance idempotency UUIDs, artifact caps.
+- **LSP symbol intelligence**: LSP servers integrate via MCP (`mcp-server-lsp`,
+  opt-in in `config/mcp_servers.yaml`), with intent-aware tool descriptions
+  (✅/❌ scenarios) and an `LSPResultCompressor` (dedup → rank → truncate).
+- **Streamable HTTP transport** (MCP 2025-03-26): POST response body IS the
+  SSE stream, coexists with the existing SSE transport.
+- **Evaluation** (`corecoder/eval/`): orchestration metrics (delegation
+  accuracy, speedup, context inflation, LSP adoption), a failure-pattern
+  knowledge base, and an incremental verification dashboard.
+
 ## Read it: the code map
 
 Laid out flat, the whole project is this big. Skim it before you clone and you'll know where everything is. This is the most concrete difference from Claude Code's hundreds of thousands of lines: you can read it like the table of contents of a book. Start from the main loop in `agent.py`; that's the heart of the whole agent.
@@ -327,7 +350,7 @@ If working through CoreCoder was useful, here are a few other tools I've built a
 
 ## Contributing / License
 
-Before you send anything, run `pytest tests/ -q` (276 tests), `ruff check`, and `compileall`, and make sure they're green. The Docker-backed sandbox tests need the image built once: `docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`. MIT licensed: fork it, learn from it, ship something better. A mention of this project is appreciated.
+Before you send anything, run `pytest tests/ -q` (376 tests), `ruff check`, and `compileall`, and make sure they're green. The Docker-backed sandbox tests need the image built once: `docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`. MIT licensed: fork it, learn from it, ship something better. A mention of this project is appreciated.
 
 ---
 

@@ -38,7 +38,7 @@ nanoGPT 那一列是拿来对照的：它最小、可读，但教的是训一个
 
 引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1081 行。连最外层的 CLI、配置、打包一起算，整个包 18 个文件、物理 1714 行、净 1385 行，每个文件都短到能一口气读完。
 
-它真能跑：读写文件、在沙箱里执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你，276 个测试是绿的（容器集成测试在 Docker 不可用时自动跳过）。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
+它真能跑：读写文件、在沙箱里执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你，376 个测试是绿的（容器集成测试在 Docker 不可用时自动跳过）。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
 
 代码来自一次公开拆解。公开的源码分析里，Claude Code 这类生产级 agent 暴露出不少关键架构，我挑出最核心的一层，用尽量少的代码诚实地复写了一遍。所以读 CoreCoder，约等于读一份基于公开源码分析的「可运行注释版」：讲的是这类 agent 的核心思路，而它本身只是最小复写，就摆在你机器上，随你拆、随你改。
 
@@ -132,6 +132,16 @@ Phase 3 把 agent 从「优秀执行者」升级成「聪明决策者」：
 `corecoder/mcp/` 把外部 MCP Server 暴露成普通工具（`mcp_<server>_<tool>`），协议隔离：JSON-RPC 分帧、SSE 重连、能力协商、错误码映射全部消化在 `Tool.execute(**kwargs) -> str` 背后，Planning 和 Self-Correction 零修改。两个传输层——stdio（Content-Length 分帧、崩溃重启、stderr 关联当前请求）与 SSE（双端点发现、Last-Event-ID 重放、指数退避重连）——加安全策略（按 Server 的工具白名单、参数正则如 `^/workspace/.*`）、密钥走 `token_env`、发现超时（`skip`/`partial`/`block`）、每次调用一条结构化 trace。在 `config/mcp_servers.yaml` 配置 Server（全部默认关闭，CLI 自动加载已启用的）。迁移：Phase 3 的 `tools/mcp_lite.py` 原型已被 `corecoder.mcp` 取代，其 `MCPToolError` 现在共用同一类型。
 
 **依赖说明**：MCP 层**零强制新增依赖**——stdio 传输只用标准库。SSE 传输需要 `aiohttp`（用 `pip install corecoder[mcp]` 安装；惰性导入，不用 SSE 就不必装）。选 aiohttp 而非 httpx：SSE 流式支持更成熟、连接复用更可控；未来若需进一步轻量化，可评估 httpx + anyio 组合替换，属低风险、低优先级。
+
+### Phase 4：系统智能
+
+CoreCoder 从「单个聪明的 Agent」升级为「可编排的智能体系统」：
+
+- **多 Agent 编排**（`corecoder/agents/`）：`SubagentDefinition`（explorer / planner / implementer / reviewer）、`SubagentRunner`（隔离上下文、超时、Token 预算，返回经校验的 RFC v1.0.1 信封）、`Blackboard`（共享 KV，带 TTL 与 `asyncio.Lock`）、`Orchestrator`（串行/并行/条件策略，连续 3 次失败熔断）。`spawn_subagent` 工具把它暴露给主 Agent。
+- **Subagent Result Contract**（`corecoder/contracts/`）：冻结的 RFC v1.0.1 信封由 Pydantic 强制——状态组合矩阵、`completeness_ratio` 严格边界、幂等 UUID、制品上限。
+- **LSP 符号智能**：LSP Server 经 MCP 集成（`mcp-server-lsp`，`config/mcp_servers.yaml` 中 opt-in），配意图化工具描述（✅/❌ 场景）与 `LSPResultCompressor`（去重→排序→截断）。
+- **Streamable HTTP 传输**（MCP 2025-03-26）：POST 响应体即 SSE 流，与既有 SSE 传输并存。
+- **评测体系**（`corecoder/eval/`）：编排效率指标（委派准确率、加速比、上下文膨胀率、LSP 采用率）、失败模式知识库、增量验证仪表盘。
 
 ## 读懂它：代码地图
 
@@ -274,7 +284,7 @@ quit / exit      退出（Ctrl+C 取消当前回合）
 
 ## 贡献 / License
 
-动手之前先跑一遍 `pytest tests/ -q`（276 个测试）、`ruff check` 和 `compileall`，绿了再提。Docker 沙箱测试需要先构建一次镜像：`docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`。MIT License，欢迎 fork 拿去造更好的东西，能在 README 里留一句出处就更好。
+动手之前先跑一遍 `pytest tests/ -q`（376 个测试）、`ruff check` 和 `compileall`，绿了再提。Docker 沙箱测试需要先构建一次镜像：`docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`。MIT License，欢迎 fork 拿去造更好的东西，能在 README 里留一句出处就更好。
 
 ---
 

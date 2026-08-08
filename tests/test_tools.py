@@ -20,6 +20,7 @@ def test_tool_count():
         "glob",
         "grep",
         "agent",
+        "spawn_subagent",
         "fetch_url",
         "todo_write",
         "todo_update",

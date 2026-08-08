@@ -17,6 +17,7 @@ from .tools import ALL_TOOLS
 from .tools.base import Tool
 from .tools.agent import AgentTool
 from .tools.correction import run_with_correction
+from .tools.subagent_tools import SpawnSubagentTool
 from .prompt import system_prompt
 from .context import ContextManager
 
@@ -40,6 +41,8 @@ class Agent:
         # wire up sub-agent capability
         for t in self.tools:
             if isinstance(t, AgentTool):
+                t._parent_agent = self
+            elif isinstance(t, SpawnSubagentTool):
                 t._parent_agent = self
 
     def _full_messages(self) -> list[dict]:
