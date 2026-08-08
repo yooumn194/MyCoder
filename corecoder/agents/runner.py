@@ -104,9 +104,54 @@ class SubagentRunner:
         raw = await asyncio.to_thread(
             sub.chat, f"{system_prompt}\n\nTask: {self.task}"
         )
+        return await self._ensure_envelope(raw, llm)
+
+    async def _ensure_envelope(self, raw: str, llm) -> dict:
+        """Return a parsed envelope dict, repairing prose output with one
+        json_object-mode call if the sub-agent didn't emit valid JSON.
+
+        Sub-agents commonly end their tool loop with prose; the RFC envelope
+        must still be produced. A single no-tools `response_format=json_object`
+        call converts the draft into the envelope (ADR-001: semantics are then
+        Pydantic-validated downstream).
+        """
         from ..contracts import parse_result
 
-        return parse_result(raw)
+        try:
+            data = parse_result(raw)
+            parse_envelope(data)  # quick validity probe
+            return data
+        except Exception:
+            pass
+        # The repair asks for LOOSE structured findings, not the strict nested
+        # envelope — the envelope is constructed deterministically from them.
+        repair = await asyncio.to_thread(
+            llm.chat,
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "Reply with a SINGLE JSON object: "
+                        '{"summary": "<your findings in <=500 chars>", '
+                        '"findings": <your structured findings>}. Example: '
+                        '{"summary": "found runner.py; it orchestrates '
+                        'subagents", "findings": '
+                        '{"files": ["corecoder/agents/runner.py"], '
+                        '"notes": "spawns and validates envelopes"}}'
+                        "No prose, no markdown."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Convert your answer into that JSON. Your previous "
+                        f"answer:\n\n{raw[:4000]}"
+                    ),
+                },
+            ],
+            response_format={"type": "json_object"},
+        )
+        return parse_result(repair.content)
 
     def _build_system_prompt(self) -> str:
         return (
@@ -183,13 +228,27 @@ class SubagentRunner:
 
     @staticmethod
     def _infer_result_payload(data: dict):
+        """Wrap loose sub-agent findings into a GeneralResult (always validates).
+
+        The strict per-type payloads (ExplorationResult etc.) are only produced
+        when the sub-agent emits a correctly-typed `result`; otherwise the
+        findings ride in structured_output, which pydantic accepts as-is.
+        """
         from ..contracts.envelope import GeneralResult
 
         inner = data.get("result")
         if isinstance(inner, dict) and inner.get("type"):
-            # pydantic Union will pick the right model from the literal type
-            return inner
-        return GeneralResult(type="general", output=SubagentRunner._summarize(data))
+            try:
+                # pydantic Union picks the right model from the literal type
+                return inner
+            except Exception:  # noqa: BLE001 - fall back to GeneralResult
+                pass
+        structured = data.get("findings") if "findings" in data else (inner if isinstance(inner, dict) else None)
+        return GeneralResult(
+            type="general",
+            output=SubagentRunner._summarize(data),
+            structured_output=structured,
+        )
 
     @staticmethod
     def _summarize(data: dict) -> str:

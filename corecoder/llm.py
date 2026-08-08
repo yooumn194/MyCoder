@@ -112,14 +112,22 @@ class LLM:
         messages: list[dict],
         tools: list[dict] | None = None,
         on_token=None,
+        response_format: dict | None = None,
     ) -> LLMResponse:
-        """Send messages, stream back response, handle tool calls."""
+        """Send messages, stream back response, handle tool calls.
+
+        `response_format` (e.g. {"type": "json_object"}) forces structured
+        output — used by the sub-agent envelope repair pass (Phase 4). Note it
+        generally cannot be combined with `tools` on the same call.
+        """
         params: dict = {
             "model": self.model,
             "messages": messages,
             "stream": True,
             **self.extra,
         }
+        if response_format:
+            params["response_format"] = response_format
         if tools:
             params["tools"] = tools
 
