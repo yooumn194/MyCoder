@@ -19,6 +19,11 @@ from .definition import BUILTIN_SUBAGENTS
 from .runner import SubagentRunner
 
 CIRCUIT_BREAKER_THRESHOLD = 3
+# Seconds a tripped subagent stays open before ONE probe call is allowed
+# (half-open). A probe that succeeds closes the breaker; one that fails
+# re-opens for another full cooldown. Without this, an open breaker never
+# self-heals — a transiently-failing subagent that recovered is never retried.
+CIRCUIT_BREAKER_COOLDOWN = 30.0
 
 
 class OrchestrationStrategy(Enum):
@@ -52,6 +57,9 @@ class Orchestrator:
         self.llm = llm
         self.tools = tools or []
         self._circuit_breaker: dict[str, int] = {}
+        # when a subagent tripped the breaker (monotonic timestamp) — for the
+        # half-open probe after the cooldown
+        self._circuit_open_since: dict[str, float] = {}
 
     # ---------------------------------------------------------------- public
 
@@ -138,7 +146,7 @@ class Orchestrator:
         filtered: list[dict] = []
         for assign in assignments:
             name = assign["subagent_name"]
-            if self._circuit_breaker.get(name, 0) >= CIRCUIT_BREAKER_THRESHOLD:
+            if self._is_open(name):
                 results[name] = self._build_circuit_break_envelope(name)
                 continue
             filtered.append(assign)
@@ -220,11 +228,30 @@ class Orchestrator:
         )
         return await runner.run()
 
+    def _is_open(self, name: str) -> bool:
+        """True when the subagent must be skipped (during the open cooldown).
+
+        After the cooldown elapses the breaker transitions to half-open: the
+        next call is allowed through as a probe. The probe either closes the
+        breaker (via _record_status on success) or re-opens it for another full
+        cooldown (via _record_status on failure).
+        """
+        if self._circuit_breaker.get(name, 0) < CIRCUIT_BREAKER_THRESHOLD:
+            return False
+        opened_at = self._circuit_open_since.get(name)
+        if opened_at is None:
+            self._circuit_open_since[name] = time.monotonic()
+            return True
+        return time.monotonic() - opened_at < CIRCUIT_BREAKER_COOLDOWN
+
     def _record_status(self, name: str, envelope: SubagentResultEnvelope) -> None:
         if envelope.status in ("success", "partial"):
             self._circuit_breaker[name] = 0
+            self._circuit_open_since.pop(name, None)
         else:
             self._circuit_breaker[name] = self._circuit_breaker.get(name, 0) + 1
+            if self._circuit_breaker[name] >= CIRCUIT_BREAKER_THRESHOLD:
+                self._circuit_open_since[name] = time.monotonic()
 
     def _build_circuit_break_envelope(self, name: str) -> SubagentResultEnvelope:
         return SubagentResultEnvelope(

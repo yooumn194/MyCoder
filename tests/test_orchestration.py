@@ -242,13 +242,66 @@ async def test_circuit_breaker_after_3_failures():
             {"subagent_name": "reviewer", "task": f"f{i}", "executor": _fail} for i in range(3)
         ],
     )
-    # next call: the same subagent is skipped before running
+    # next call (within the cooldown): the same subagent is skipped before running
     result = await orch.orchestrate(
         "t", OrchestrationStrategy.SEQUENTIAL, parent_context=_ctx(),
         subtasks=[{"subagent_name": "reviewer", "task": "f4", "executor": _fail}],
     )
     env = result.results["reviewer"]
     assert env.error.code == "CIRCUIT_BREAKER_OPEN"
+
+
+async def test_circuit_breaker_self_heals_after_cooldown():
+    """A probe after the cooldown runs; on success the breaker closes."""
+    from corecoder.agents.orchestrator import CIRCUIT_BREAKER_COOLDOWN
+
+    calls = {"n": 0}
+
+    async def _exec(task, system_prompt):
+        calls["n"] += 1
+        return _envelope("failed" if calls["n"] <= 3 else "success")
+
+    orch = _orchestrator()
+    await orch.orchestrate(
+        "t", OrchestrationStrategy.SEQUENTIAL, parent_context=_ctx(),
+        subtasks=[{"subagent_name": "reviewer", "task": f"f{i}", "executor": _exec} for i in range(3)],
+    )
+    # simulate the cooldown elapsing -> next call is a half-open probe
+    orch._circuit_open_since["reviewer"] -= CIRCUIT_BREAKER_COOLDOWN + 1
+    result = await orch.orchestrate(
+        "t", OrchestrationStrategy.SEQUENTIAL, parent_context=_ctx(),
+        subtasks=[{"subagent_name": "reviewer", "task": "probe", "executor": _exec}],
+    )
+    env = result.results["reviewer"]
+    assert env.status == "success"  # probe succeeded -> closed
+    assert orch._circuit_breaker["reviewer"] == 0
+
+
+async def test_circuit_breaker_probe_failure_reopens():
+    """A failing probe re-opens the breaker for another full cooldown."""
+    from corecoder.agents.orchestrator import CIRCUIT_BREAKER_COOLDOWN
+
+    async def _always_fail(task, system_prompt):
+        return _envelope("failed")
+
+    orch = _orchestrator()
+    await orch.orchestrate(
+        "t", OrchestrationStrategy.SEQUENTIAL, parent_context=_ctx(),
+        subtasks=[{"subagent_name": "reviewer", "task": f"f{i}", "executor": _always_fail} for i in range(3)],
+    )
+    # after cooldown, the probe RUNS (and fails)
+    orch._circuit_open_since["reviewer"] -= CIRCUIT_BREAKER_COOLDOWN + 1
+    r1 = await orch.orchestrate(
+        "t", OrchestrationStrategy.SEQUENTIAL, parent_context=_ctx(),
+        subtasks=[{"subagent_name": "reviewer", "task": "probe1", "executor": _always_fail}],
+    )
+    assert r1.results["reviewer"].status == "failed"  # probe ran, failed
+    # re-opened: immediately after, it is skipped again (fresh cooldown)
+    r2 = await orch.orchestrate(
+        "t", OrchestrationStrategy.SEQUENTIAL, parent_context=_ctx(),
+        subtasks=[{"subagent_name": "reviewer", "task": "probe2", "executor": _always_fail}],
+    )
+    assert r2.results["reviewer"].error.code == "CIRCUIT_BREAKER_OPEN"
 
 
 # ---------------------------------------------------------------------------
