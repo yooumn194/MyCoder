@@ -1,0 +1,30 @@
+# Model routing config for the Phase 3 router (corecoder/model_router.py).
+# Hot-reloaded on file change — edit this and the next classify() call picks it up.
+#
+# tiers:      concrete model names per tier (edit to match your providers)
+# routing_rules: matched top-to-bottom; the FIRST hit wins. An empty
+#              `keywords` list is the absolute fallback.
+
+tiers:
+  fast: "ollama/qwen2.5-coder:7b"
+  standard: "deepseek-ai/DeepSeek-V4-Flash"
+  powerful: "claude-opus-5"
+
+routing_rules:
+  # 涉及多文件的重构/架构类任务 → 最强模型
+  - tier: powerful
+    keywords: ["重构", "架构", "设计模式", "多文件迁移", "breaking change"]
+    min_file_count: 3
+
+  # 常规实现/修复 → 标准模型
+  - tier: standard
+    keywords: ["实现", "添加功能", "修复bug", "单元测试"]
+    max_file_count: 2
+
+  # 廉价探索类任务 → 快速模型
+  - tier: fast
+    keywords: ["搜索", "读取", "格式化", "lint", "类型检查"]
+
+  # 兜底
+  - tier: standard
+    keywords: []

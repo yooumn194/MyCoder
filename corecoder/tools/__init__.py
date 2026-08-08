@@ -11,6 +11,7 @@ from .grep_search import GrepSearchTool
 from .list_files import ListFilesTool
 from .sandbox_tool import ExecuteInSandboxTool
 from .sync_tool import SyncWorkspaceTool
+from .todo_tools import TodoUpdateTool, TodoWriteTool
 
 
 ALL_TOOLS = [
@@ -18,8 +19,9 @@ ALL_TOOLS = [
     # by the sandboxed executor: same contract, isolated by Docker, with a
     # user-confirmed local fallback. sync_workspace pulls the sandbox's
     # /workspace changes back to the host. grep_search / list_files are the
-    # Phase 2 agentic-search tools (path-guarded, rg-first). corecoder/agent.py
-    # needs no changes.
+    # Phase 2 agentic-search tools (path-guarded, rg-first). todo_write /
+    # todo_update are the Phase 3 planning tools. corecoder/agent.py only
+    # gains a tiny guard + correction hook in _exec_tool (Phase 3 spec).
     ExecuteInSandboxTool(),
     SyncWorkspaceTool(),
     GrepSearchTool(),
@@ -31,6 +33,8 @@ ALL_TOOLS = [
     GrepTool(),
     AgentTool(),
     FetchUrlTool(),
+    TodoWriteTool(),
+    TodoUpdateTool(),
 ]
 
 

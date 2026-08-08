@@ -17,7 +17,7 @@ def test_public_api_exports():
     assert LLM is not None
     assert Config is not None
     # bash was replaced by execute_in_sandbox; sync_workspace, grep_search,
-    # list_files and fetch_url added
+    # list_files, fetch_url, and the Phase 3 planning tools added
     assert {t.name for t in ALL_TOOLS} == {
         "execute_in_sandbox",
         "sync_workspace",
@@ -30,6 +30,8 @@ def test_public_api_exports():
         "grep",
         "agent",
         "fetch_url",
+        "todo_write",
+        "todo_update",
     }
 
 

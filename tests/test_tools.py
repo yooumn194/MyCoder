@@ -21,6 +21,8 @@ def test_tool_count():
         "grep",
         "agent",
         "fetch_url",
+        "todo_write",
+        "todo_update",
     }
 
 

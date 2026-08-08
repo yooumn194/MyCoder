@@ -12,9 +12,11 @@ which means it's done working and ready to report back.
 import concurrent.futures
 import inspect
 from .llm import LLM
+from .planner import planning_guard
 from .tools import ALL_TOOLS
 from .tools.base import Tool
 from .tools.agent import AgentTool
+from .tools.correction import run_with_correction
 from .prompt import system_prompt
 from .context import ContextManager
 
@@ -103,6 +105,12 @@ class Agent:
         tool = self._tool_by_name.get(tc.name)
         if tool is None:
             return f"Error: unknown tool '{tc.name}'"
+        # Phase 3 planning guard: soft/hard interception at the dispatch layer
+        # (see corecoder/planner.py). Soft mode preserves open-ended editing;
+        # CORECODER_ENFORCE_PLANNING=1 hard-blocks mutation without a plan.
+        guard_msg = planning_guard(tc.name)
+        if guard_msg:
+            return guard_msg
         # validate arguments first so a TypeError raised *inside* the tool isn't
         # mislabelled as a bad-arguments error from the caller
         try:
@@ -110,7 +118,10 @@ class Agent:
         except TypeError as e:
             return f"Error: bad arguments for {tc.name}: {e}"
         try:
-            return tool.execute(**tc.arguments)
+            # Phase 3 self-correction: deterministic retry strategies on
+            # transient failures (retry_same / retry_modified with timeout
+            # extension); everything else surfaces for the agent to reflect.
+            return run_with_correction(tool.execute, **tc.arguments)
         except Exception as e:
             return f"Error executing {tc.name}: {e}"
 
