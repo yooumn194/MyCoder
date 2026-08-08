@@ -179,6 +179,13 @@ per-call structured trace. Configure servers in `config/mcp_servers.yaml`
 `tools/mcp_lite.py` prototype is superseded by `corecoder.mcp`; its
 `MCPToolError` is now the unified type.
 
+**Dependency note.** The MCP layer adds zero mandatory dependencies: the stdio
+transport is pure standard library. SSE needs `aiohttp` — install it with
+`pip install corecoder[mcp]` (imported lazily, so you only pay for it if you
+use SSE). aiohttp over httpx: SSE streaming support is more mature and
+connection reuse is easier to control; a future switch to httpx + anyio is a
+low-risk, low-priority option.
+
 ## Read it: the code map
 
 Laid out flat, the whole project is this big. Skim it before you clone and you'll know where everything is. This is the most concrete difference from Claude Code's hundreds of thousands of lines: you can read it like the table of contents of a book. Start from the main loop in `agent.py`; that's the heart of the whole agent.

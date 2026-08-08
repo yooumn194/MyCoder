@@ -112,3 +112,59 @@ def test_agent_dispatches_mcp_tool(tmp_path):
     agent = Agent(llm=SimpleNamespace(), tools=mcp_tools)
     r = agent._exec_tool(SimpleNamespace(name="mcp_filesystem_echo", arguments={"text": "agent-hi"}))
     assert r == "echo:agent-hi"
+
+
+# --- 3.5.2: startup discovery hint -----------------------------------------
+
+def _patched_logger(monkeypatch):
+    from unittest import mock
+
+    from corecoder.mcp import registry as reg
+
+    logger = mock.Mock()
+    monkeypatch.setattr(reg, "logger", logger)
+    return logger
+
+
+def test_hint_when_all_servers_disabled(tmp_path, monkeypatch):
+    """INFO hint fires when servers exist but all are disabled (the discoverable trap)."""
+    logger = _patched_logger(monkeypatch)
+    cfg = tmp_path / "mcp.yaml"
+    cfg.write_text(
+        yaml.dump({"servers": {"filesystem": {"enabled": False}, "github": {"enabled": False}}}),
+        encoding="utf-8",
+    )
+    tools = mcp_pkg.load_mcp_tools(cfg)
+    assert tools == []
+    hint = [c for c in logger.info.call_args_list if c.args and c.args[0] == "mcp_discovery_hint"]
+    assert hint
+    assert len(hint[0].kwargs["disabled_servers"]) == 2
+    assert str(cfg) in str(hint[0].kwargs["message"])  # tells the user where to edit
+
+
+def test_no_hint_when_config_empty(tmp_path, monkeypatch):
+    logger = _patched_logger(monkeypatch)
+    cfg = tmp_path / "mcp.yaml"
+    cfg.write_text(yaml.dump({"servers": {}}), encoding="utf-8")
+    mcp_pkg.load_mcp_tools(cfg)
+    assert not any(c.args and c.args[0] == "mcp_discovery_hint" for c in logger.info.call_args_list)
+
+
+def test_partial_enabled_uses_debug(tmp_path, monkeypatch):
+    """Partially enabled: DEBUG hint, no INFO noise."""
+    logger = _patched_logger(monkeypatch)
+    cfg = tmp_path / "mcp.yaml"
+    cfg.write_text(
+        yaml.dump({
+            "servers": {
+                "filesystem": {"transport": "stdio", "command": "nonexistent-bin", "args": [], "enabled": True},
+                "github": {"enabled": False},
+            }
+        }),
+        encoding="utf-8",
+    )
+    mcp_pkg.load_mcp_tools(cfg)  # enabled server crashes -> skipped, but hint still fires
+    assert not any(c.args and c.args[0] == "mcp_discovery_hint" for c in logger.info.call_args_list)
+    partial = [c for c in logger.debug.call_args_list if c.args and c.args[0] == "mcp_discovery_partial"]
+    assert partial
+    assert len(partial[0].kwargs["disabled"]) == 1

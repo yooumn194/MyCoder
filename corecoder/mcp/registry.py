@@ -5,10 +5,12 @@ the timeout is skipped / degraded / blocks per the `fail_strategy` config,
 never hanging agent startup.
 """
 
+from pathlib import Path
+
 from ..tools.base import Tool
 from .adapter import MCPToolAdapter
 from .client import MCPClient
-from .config import enabled_servers, load_mcp_config
+from .config import DEFAULT_CONFIG_PATH, enabled_servers, load_mcp_config
 from .errors import MCPStartupError
 from .logger import get_logger
 from .runtime import run_in_loop
@@ -103,8 +105,35 @@ async def register_server(client, config, security, registry, *, server_name: st
     return registered
 
 
-async def _load_mcp_tools_async(config_path=None) -> list[Tool]:
-    config = load_mcp_config(config_path)
+def _emit_discovery_hint(config: dict, config_path) -> None:
+    """Help a first-time MCP configurator who enabled nothing yet.
+
+    INFO only when servers exist but all are disabled (the discoverable trap);
+    DEBUG when some are skipped; nothing when the config is empty. Pure logging
+    — zero effect on registration behaviour.
+    """
+    all_servers = config.get("servers", {})
+    enabled = [n for n, s in all_servers.items() if s.get("enabled")]
+    disabled = [n for n, s in all_servers.items() if not s.get("enabled")]
+    if all_servers and not enabled:
+        logger.info(
+            "mcp_discovery_hint",
+            message=(
+                f"发现 {len(all_servers)} 个 MCP Server 配置，但均未启用。"
+                f"如需启用，在 {config_path} 中将对应 server 的 enabled 设为 true。"
+            ),
+            disabled_servers=disabled,
+        )
+    elif disabled:
+        logger.debug(
+            "mcp_discovery_partial",
+            message=f"已启用 {len(enabled)} 个 MCP Server，跳过未启用的: {disabled}",
+            enabled=enabled,
+            disabled=disabled,
+        )
+
+
+async def _load_mcp_tools_async(config: dict) -> list[Tool]:
     security = MCPSecurityPolicy(config)
     registry = ToolRegistry()
     for server_name, server_cfg in enabled_servers(config):
@@ -129,4 +158,7 @@ def load_mcp_tools(config_path=None) -> list[Tool]:
     The returned adapters stay bound to their live transports; keep the list
     referenced for the session.
     """
-    return run_in_loop(_load_mcp_tools_async(config_path))
+    path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
+    config = load_mcp_config(config_path)
+    _emit_discovery_hint(config, path)
+    return run_in_loop(_load_mcp_tools_async(config))

@@ -10,6 +10,24 @@ from corecoder.mcp.errors import MCPToolError, MCPTransportError
 from corecoder.mcp.transport.sse import SSETransport
 
 
+def test_sse_import_error_is_clear(monkeypatch):
+    """Missing aiohttp -> a clear install hint, not a bare ImportError."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _fake_import(name, *args, **kwargs):
+        if name == "aiohttp":
+            raise ImportError("No module named 'aiohttp'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+    with pytest.raises(MCPTransportError) as exc:
+        SSETransport(sse_endpoint="https://example.com/sse", name="x")
+    assert "aiohttp" in str(exc.value)
+    assert "corecoder[mcp]" in str(exc.value)
+
+
 class FakeSSEServer:
     """An aiohttp MCP SSE server: GET /sse streams, POST /messages responds via the stream."""
 

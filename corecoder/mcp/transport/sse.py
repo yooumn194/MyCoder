@@ -14,12 +14,14 @@ import asyncio
 import json
 import uuid
 
-import aiohttp
-
 from ..errors import MCPRemoteError, MCPToolError, MCPTransportError
 from ..logger import get_logger
 
 logger = get_logger()
+
+# aiohttp is imported lazily (in __init__) so that stdio-only users never pay
+# for it — the MCP layer adds zero mandatory dependencies (see pyproject [mcp]).
+# The decision rationale is documented in the README's dependency note.
 
 RECONNECT_BASE_DELAY = 1.0
 RECONNECT_MAX_DELAY = 30.0
@@ -39,14 +41,24 @@ class SSETransport:
         timeout: float = 30.0,
         endpoint_timeout: float = ENDPOINT_DISCOVERY_TIMEOUT,
     ) -> None:
+        # lazy import: a pure-stdio install never needs aiohttp
+        try:
+            import aiohttp  # noqa: PLC0415 - intentional lazy dependency
+        except ImportError as e:
+            raise MCPTransportError(
+                name,
+                "connect",
+                "SSE 传输需要 aiohttp。请安装: pip install 'corecoder[mcp]' 或 pip install aiohttp。",
+            ) from e
+        self._aiohttp = aiohttp
         self._sse_endpoint = sse_endpoint
         self._post_endpoint = post_endpoint  # None -> wait for the SSE endpoint event
         self._auth = auth or {}
         self.name = name
         self._timeout = timeout
         self._endpoint_timeout = endpoint_timeout
-        self._session: aiohttp.ClientSession | None = None
-        self._sse_connection: aiohttp.ClientResponse | None = None
+        self._session = None
+        self._sse_connection = None
         self._last_event_id: str | None = None
         self._pending: dict[str, asyncio.Future] = {}
         self._endpoint_event: asyncio.Future | None = None
@@ -68,7 +80,7 @@ class SSETransport:
 
         if self._session is not None:
             await self._session.close()
-        self._session = aiohttp.ClientSession(headers=headers)
+        self._session = self._aiohttp.ClientSession(headers=headers)
         self._sse_connection = await self._session.get(self._sse_endpoint)
         if self._sse_connection.status != 200:
             raise MCPTransportError(
@@ -192,7 +204,7 @@ class SSETransport:
                         self._handle_sse_line(line)
                 # stream ended normally (server closed it) — treat as a disconnect
                 raise ConnectionResetError("SSE stream closed by server")
-            except (aiohttp.ClientError, ConnectionResetError, asyncio.TimeoutError) as e:
+            except (self._aiohttp.ClientError, ConnectionResetError, asyncio.TimeoutError) as e:
                 logger.warning(
                     "mcp_sse_disconnected",
                     server=self.name,

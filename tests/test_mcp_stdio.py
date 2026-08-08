@@ -138,3 +138,24 @@ async def test_error_returns_structured_mcp_error(tmp_path):
         assert exc.value.code == -32602
     finally:
         await t.shutdown(graceful=False)
+
+
+async def test_stdio_works_without_aiohttp(monkeypatch, tmp_path):
+    """A pure-stdio install never needs aiohttp (lazy SSE dependency)."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _fake_import(name, *args, **kwargs):
+        if name == "aiohttp":
+            raise ImportError("No module named 'aiohttp'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+    t = _make_transport(tmp_path)
+    await t.start()
+    try:
+        hs = await t.handshake()
+        assert hs.get("protocolVersion") == "2024-11-05"
+    finally:
+        await t.shutdown(graceful=False)
