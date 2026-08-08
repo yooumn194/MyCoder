@@ -28,6 +28,16 @@ jobs:
           python -m pip install -U pip
           python -m pip install -e ".[dev]"
 
+      # ripgrep for the live rg-backend tests (they skip when rg is absent).
+      - name: Install ripgrep
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            Linux)  sudo apt-get update && sudo apt-get install -y ripgrep ;;
+            macOS)  brew install ripgrep ;;
+            Windows) choco install ripgrep -y ;;
+          esac
+
       - name: Run tests
         run: python -m pytest tests/ -v
 

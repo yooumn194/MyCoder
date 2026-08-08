@@ -3,6 +3,11 @@
 from pathlib import Path
 from .base import Tool
 
+# TODO(Phase 4): once list_files (path-guarded, symlink-safe, default-excludes)
+# fully replaces this legacy tool in the agent's workflow, remove GlobTool and
+# its tests. Keeping both registered confuses the agent about which lookup tool
+# to use; the search-strategy prompt already steers it to list_files.
+
 
 class GlobTool(Tool):
     name = "glob"

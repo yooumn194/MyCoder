@@ -7,6 +7,11 @@ from .base import Tool
 # skip these dirs to avoid noise
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".tox", "dist", "build"}
 
+# TODO(Phase 4): once grep_search (path-guarded, rg-first, capped) fully
+# replaces this legacy tool in the agent's workflow, remove GrepTool and its
+# tests. Keeping both registered confuses the agent about which search tool to
+# use; the search-strategy prompt already steers it to grep_search.
+
 
 class GrepTool(Tool):
     name = "grep"
