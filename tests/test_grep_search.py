@@ -154,3 +154,16 @@ def test_invalid_regex_reported(tmp_path):
     _make_proj(tmp_path)
     r = _py_tool(tmp_path).execute(pattern="[invalid")
     assert "搜索失败" in r or "(no matches)" in r
+
+
+def test_fallback_survives_non_utf8_file(tmp_path):
+    """A GBK-encoded file (bytes invalid in UTF-8) must not crash the search.
+
+    The fallback reads with errors="replace", so a non-UTF-8 file degrades to
+    replacement characters instead of aborting the whole walk — and the valid
+    UTF-8 files are still searched.
+    """
+    _make_proj(tmp_path)
+    (tmp_path / "gbk.py").write_bytes('名称 = "你好"\n'.encode("gbk"))
+    r = _py_tool(tmp_path).execute(pattern="def authenticate_user", file_types="py")
+    assert "src/auth/handler.py" in r  # valid files still searched, no crash

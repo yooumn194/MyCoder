@@ -1,8 +1,15 @@
 """list_files: glob-based file lookup within the project root.
 
 Every returned path is PathGuard-validated (must stay inside the project
-root), default-excludes junk directories, and never follows symlinks — both
-symlinked leaves and paths reached through a symlinked directory are dropped.
+root), default-excludes junk directories, and never follows symlinks.
+
+Security policy on symlinks: we deliberately do NOT follow symlinked
+directories or report symlinked files. Following a symlink would let a glob
+like `**/*.py` reach files outside the project through a link inside it — the
+same escape PathGuard blocks for explicit paths. Dropping symlinks entirely
+(the `find -L` / glob-follow behavior is the dangerous one) is the fail-closed
+choice: a symlinked project never leaks, and an internal symlink's target can
+be listed by globbing the target's real path instead.
 """
 
 from pathlib import Path
