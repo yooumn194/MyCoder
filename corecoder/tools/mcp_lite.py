@@ -14,16 +14,9 @@ import json
 import subprocess
 import uuid
 
-
-class MCPToolError(Exception):
-    """Structured MCP failure, classifyable by ErrorClassifier."""
-
-    def __init__(self, error_type: str, server: str, tool: str, message: str) -> None:
-        self.error_type = error_type
-        self.server = server
-        self.tool = tool
-        self.message = message
-        super().__init__(message)
+# Unified with the Phase 3.5 production package so ErrorClassifier sees the
+# same structured error type regardless of which client layer raised it.
+from ..mcp.errors import MCPToolError  # noqa: F401  (re-exported for compat)
 
 
 class StdioTransport:

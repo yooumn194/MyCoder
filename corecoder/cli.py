@@ -12,6 +12,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 
 from .agent import Agent
+from .tools import ALL_TOOLS
 from .llm import LLM, LiteLLM
 from .config import Config
 from .session import save_session, load_session, list_sessions
@@ -70,7 +71,15 @@ def main():
         temperature=config.temperature,
         max_tokens=config.max_tokens,
     )
-    agent = Agent(llm=llm, max_context_tokens=config.max_context_tokens)
+    # Phase 3.5: MCP servers (config/mcp_servers.yaml, all opt-in by default).
+    # A broken MCP server never blocks the REPL.
+    try:
+        from .mcp import load_mcp_tools
+
+        tools = [*ALL_TOOLS, *load_mcp_tools()]
+    except Exception:  # noqa: BLE001 - MCP is optional
+        tools = ALL_TOOLS
+    agent = Agent(llm=llm, tools=tools, max_context_tokens=config.max_context_tokens)
 
     # resume saved session
     if args.resume:

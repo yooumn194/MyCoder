@@ -1,0 +1,49 @@
+# MCP server configuration for the Phase 3.5 client (corecoder/mcp/).
+# All servers default to `enabled: false` — opt in per server, or the client
+# will try to spawn them on every startup.
+#
+# Secret rule: a token is referenced by NAME via token_env and read from the
+# environment at load time — never hardcode a secret in this file.
+
+servers:
+  filesystem:
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+    enabled: false
+
+  github:
+    transport: sse
+    # SSE spec separates the two endpoints: the stream (GET) and the message
+    # endpoint (POST). post_endpoint: null = discover it from the stream's
+    # `endpoint` event; set it statically if your server doesn't announce it.
+    sse_endpoint: https://mcp.example.com/github/sse
+    post_endpoint: null
+    auth:
+      type: bearer
+      token_env: GITHUB_MCP_TOKEN
+    enabled: false
+
+  jira:
+    transport: stdio
+    command: node
+    args: ["./mcp-servers/jira/index.js"]
+    enabled: false
+    env:
+      JIRA_BASE_URL: https://mycompany.atlassian.net
+
+discovery:
+  initial_timeout: 10        # seconds; a server that doesn't answer is degraded
+  fail_strategy: skip        # skip | partial | block
+
+security:
+  # Tool whitelist: unlisted tools are NOT registered, even if the server
+  # advertises them. jira is not listed -> zero jira tools even when enabled.
+  allowed_tools:
+    filesystem: ["read_file", "write_file", "list_directory", "search_files"]
+    github: ["create_issue", "list_issues", "get_pull_request"]
+
+  # Parameter regexes: blocks e.g. path traversal through an MCP tool.
+  param_validators:
+    filesystem.read_file.path: "^/workspace/.*"
+    filesystem.write_file.path: "^/workspace/.*"

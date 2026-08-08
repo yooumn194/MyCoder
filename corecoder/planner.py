@@ -221,7 +221,9 @@ def planning_guard(tool_name: str) -> str | None:
     """
     if tool_name in EXPLORATION_TOOLS | PLANNING_TOOLS:
         return None
-    if tool_name not in MUTATION_TOOLS:
+    if tool_name not in MUTATION_TOOLS and not tool_name.startswith("mcp_"):
+        # mcp_* tools (Phase 3.5 adapters) are treated as ordinary mutation
+        # tools, so they obey the same plan discipline.
         return None
 
     plan = get_active_plan()

@@ -38,7 +38,7 @@ I've always felt coding agents get talked about as if they were arcane. Strip a 
 
 The engine (loop, model interface, context, tools, sessions) is 1,081 lines once you drop blank lines and comments. Counting the outer CLI, config and packaging too, the whole package is 18 files: 1,714 physical lines, 1,385 net, every one short enough to read in a single sitting.
 
-And it really runs: reads and writes files, executes shell in a sandbox, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. 239 tests, all green (the container integration tests skip themselves when Docker is unavailable). But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
+And it really runs: reads and writes files, executes shell in a sandbox, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. 276 tests, all green (the container integration tests skip themselves when Docker is unavailable). But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
 
 The code came out of a public teardown: open analyses have already exposed a lot of the load-bearing architecture inside production agents like Claude Code. I took the most essential layer and rewrote it honestly, in as little code as I could. So reading CoreCoder is roughly like reading a runnable, annotated take on how that kind of agent works, except it's only a minimal reimplementation, sitting right there on your machine for you to take apart and change.
 
@@ -162,6 +162,22 @@ decision-maker:
 Other tunables: `CORECODER_CONFIRM_TIMEOUT` (default `60`, the confirmation
 prompt deadline) and, for `grep_search`, note that without `rg` the pure-Python
 fallback is used — roughly 10–50× slower on large trees, identical output.
+
+### Phase 3.5: MCP
+
+`corecoder/mcp/` exposes external MCP servers as ordinary tools
+(`mcp_<server>_<tool>`), protocol-isolated: JSON-RPC framing, SSE reconnect,
+capability negotiation and error-code mapping are all digested behind
+`Tool.execute(**kwargs) -> str`, so Planning and Self-Correction need no
+changes. Two transports — stdio (Content-Length framing, crash restart, stderr
+correlated to the active request) and SSE (dual-endpoint discovery,
+Last-Event-ID replay, exponential-backoff reconnect) — plus a security policy
+(per-server tool whitelist, parameter regexes like `^/workspace/.*`), secrets
+via `token_env`, discovery timeouts (`skip`/`partial`/`block`), and a
+per-call structured trace. Configure servers in `config/mcp_servers.yaml`
+(all opt-in; the CLI picks them up automatically). Migration: the Phase 3
+`tools/mcp_lite.py` prototype is superseded by `corecoder.mcp`; its
+`MCPToolError` is now the unified type.
 
 ## Read it: the code map
 
@@ -304,7 +320,7 @@ If working through CoreCoder was useful, here are a few other tools I've built a
 
 ## Contributing / License
 
-Before you send anything, run `pytest tests/ -q` (239 tests), `ruff check`, and `compileall`, and make sure they're green. The Docker-backed sandbox tests need the image built once: `docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`. MIT licensed: fork it, learn from it, ship something better. A mention of this project is appreciated.
+Before you send anything, run `pytest tests/ -q` (276 tests), `ruff check`, and `compileall`, and make sure they're green. The Docker-backed sandbox tests need the image built once: `docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`. MIT licensed: fork it, learn from it, ship something better. A mention of this project is appreciated.
 
 ---
 

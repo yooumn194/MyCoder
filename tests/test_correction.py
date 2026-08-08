@@ -58,6 +58,25 @@ def test_classify_sandbox_oom_fail_fast():
     assert strategy == CorrectionStrategy.FAIL_FAST
 
 
+def test_classify_mcp_error_types():
+    """Every MCP error_type maps to the correct correction strategy."""
+    from corecoder.mcp.errors import MCPToolError
+
+    cases = {
+        "MCPInvalidRequest": CorrectionStrategy.ESCALATE_USER,
+        "MCPInvalidParams": CorrectionStrategy.ESCALATE_USER,
+        "MCPMethodNotFound": CorrectionStrategy.FAIL_FAST,
+        "MCPInternalError": CorrectionStrategy.RETRY_SAME,
+        "MCPServerError": CorrectionStrategy.ALTERNATIVE_METHOD,
+        "MCPHTTPError": CorrectionStrategy.RETRY_MODIFIED,
+        "MCPUnknownError": CorrectionStrategy.UPGRADE_MODEL,
+        "MCPServerTimeout": CorrectionStrategy.RETRY_MODIFIED,
+    }
+    for error_type, expected in cases.items():
+        err = MCPToolError(error_type, "fs", "tool", "boom")
+        assert ErrorClassifier.classify(err)[0] == expected, error_type
+
+
 # ---------------------------------------------------------------------------
 # run_with_correction: the retry loop
 # ---------------------------------------------------------------------------

@@ -33,6 +33,22 @@ class FatalToolError(Exception):
     """Unrecoverable (e.g. resource exhaustion) — never retry."""
 
 
+# MCP error_type -> (correction strategy, params) (Phase 3.5 §Module G).
+_MCP_ERROR_STRATEGY: dict[str, tuple[CorrectionStrategy, dict]] = {
+    "MCPInvalidRequest": (CorrectionStrategy.ESCALATE_USER, {}),
+    "MCPMethodNotFound": (CorrectionStrategy.FAIL_FAST, {}),
+    "MCPInvalidParams": (CorrectionStrategy.ESCALATE_USER, {}),
+    "MCPInternalError": (CorrectionStrategy.RETRY_SAME, {}),
+    "MCPServerError": (CorrectionStrategy.ALTERNATIVE_METHOD, {}),
+    "MCPHTTPError": (CorrectionStrategy.RETRY_MODIFIED, {"backoff": 5}),
+    "MCPUnknownError": (CorrectionStrategy.UPGRADE_MODEL, {}),
+    "MCPServerTimeout": (CorrectionStrategy.RETRY_MODIFIED, {"backoff": 5, "timeout_multiplier": 2}),
+    "MCPConnectionClosed": (CorrectionStrategy.RETRY_SAME, {}),
+    "MCPNotConnected": (CorrectionStrategy.RETRY_MODIFIED, {"backoff": 5}),
+    "MCPSSEEndpointMissing": (CorrectionStrategy.ESCALATE_USER, {}),
+}
+
+
 class ErrorClassifier:
     """Deterministic classification — no tokens, no model call."""
 
@@ -66,10 +82,9 @@ class ErrorClassifier:
         # structured errors carry an explicit error_type (e.g. MCPToolError)
         error_type = getattr(error, "error_type", None)
         if error_type:
-            lower = str(error_type).lower()
-            if "timeout" in lower:
-                return CorrectionStrategy.RETRY_MODIFIED, {"backoff": 5, "timeout_multiplier": 2}
-            return CorrectionStrategy.RETRY_SAME, {}
+            mapped = _MCP_ERROR_STRATEGY.get(str(error_type))
+            if mapped is not None:
+                return mapped
 
         message = str(error).lower()
         for pattern, strategy, params in cls.RULES:
