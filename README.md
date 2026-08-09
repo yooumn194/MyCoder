@@ -235,6 +235,45 @@ CoreCoder grows from a single smart agent into an orchestratable agent system:
   accuracy, speedup, context inflation, LSP adoption), a failure-pattern
   knowledge base, and an incremental verification dashboard.
 
+### Phase 5: hybrid-retrieval memory
+
+Cross-session memory that survives restarts, with **zero infrastructure** and
+**graceful degradation** (every optional backend can be missing):
+
+- **Storage** (`corecoder/memory/store.py`): two SQLite databases with the same
+  schema — project (`<repo>/.corecoder/memory.db`) and global
+  (`~/.corecoder/memory.db`). Each holds a `memories` table, a manually-managed
+  FTS5 index (`tokenize='ascii'`, content is jieba/bigram-tokenized before
+  insert), and an `embeddings` vector table.
+- **Tokenization** (`corecoder/memory/tokenizer.py`): jieba word segmentation
+  when installed, otherwise a zero-dependency CJK bigram tokenizer — both give
+  *word-level* Chinese matching (searching `认证模块` finds a memory containing
+  `认证模块使用JWT…`), never single-character.
+- **Embeddings** (`corecoder/memory/embedder.py`): `fastembed` →
+  `sentence-transformers` → built-in deterministic hashing backend (numpy), or
+  `none`. Heavy models load lazily; every backend shares a bounded hand-rolled
+  LRU cache.
+- **Vectors** (`store._NumpyVectorBackend` / `_Vec0VectorBackend`): `sqlite-vec`
+  when the extension loads, otherwise brute-force cosine over a BLOB column —
+  so the hybrid path works with zero extra dependencies.
+- **Hybrid retrieval** (`corecoder/memory/retriever.py`): BM25 (FTS5, both
+  dbs) + vector cosine fused with Reciprocal Rank Fusion (`k=60`); filters
+  (scope / type / min confidence / deprecated) are applied with a batched
+  `IN` query.
+- **Confidence decay** (`corecoder/memory/maintenance.py`): `auto` memories
+  untouched for 30 days (≥3 accesses) lose confidence — project ×0.8, global
+  ×0.95 — and drop below a threshold become `deprecated_by='decayed'`, pruned
+  by `compact()`. `user` / `confirmed` memories never decay.
+- **Six tools**: `memory_save` / `memory_search` / `memory_list` /
+  `memory_forget` / `memory_confirm` / `memory_stats`. Saves are deduplicated
+  (cosine > 0.85 → update, not duplicate) and redacted for secrets.
+- **Integration**: before `todo_write`, relevant memories are injected into the
+  plan prompt (`planning_guard`); a recovered Self-Correction failure settles a
+  `pattern` memory; a finished plan is distilled into a `decision` memory.
+
+Configuration lives in `config/memory.yaml` (`embedder.backend`, `rrf_k`,
+`max_tokens`, `decay_days`, …). All of it is optional and lazily loaded.
+
 ## Read it: the code map
 
 Laid out flat, the whole project is this big. Skim it before you clone and you'll know where everything is. This is the most concrete difference from Claude Code's hundreds of thousands of lines: you can read it like the table of contents of a book. Start from the main loop in `agent.py`; that's the heart of the whole agent.
@@ -275,10 +314,21 @@ corecoder/
     ├── glob_tool.py  filename matching (legacy)            47 lines
     ├── write.py      file write                            38 lines
     ├── agent.py      sub-agent spawning                    58 lines
-    └── base.py       tool base class                       27 lines
+    ├── base.py       tool base class                       27 lines
+    └── memory_tools.py  six memory tools                 ~160 lines   ← Phase 5
+└── memory/          hybrid-retrieval memory system        ~700 lines   ← Phase 5
+    ├── store.py      dual-db SQLite + FTS5 + vector backends  300 lines
+    ├── retriever.py  BM25 + vector, RRF fusion              120 lines
+    ├── embedder.py   multi-backend embeddings + LRU         150 lines
+    ├── tokenizer.py  jieba→bigram degraded tokenization      80 lines
+    ├── maintenance.py confidence decay + compact + stats     90 lines
+    ├── prompt.py     memory-section injection + token budget 90 lines
+    ├── integration.py planning_guard / Self-Correction wiring 110 lines
+    ├── security.py   sensitive-info redaction               60 lines
+    └── types.py      data models                           110 lines
 ```
 
-(The container image itself is built from `sandbox/Dockerfile` at the repo root.) Thirteen tools: `execute_in_sandbox` (the sandboxed successor to `bash`), `sync_workspace`, `grep_search` and `list_files` (the Phase 2 agentic-search pair: zero index, zero embedding, path-guarded, ripgrep-first with a pure-Python fallback), `todo_write` and `todo_update` (the Phase 3 planning pair), `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `agent` (which spawns a sub-agent), and `fetch_url`. The search strategy lives in `prompts/search_strategy.py`; the model-routing rules in `config/model_routing.yaml`. Everything else is the CLI shell, config, and packaging wrapped around that engine core.
+(The container image itself is built from `sandbox/Dockerfile` at the repo root.) Nineteen tools: `execute_in_sandbox` (the sandboxed successor to `bash`), `sync_workspace`, `grep_search` and `list_files` (the Phase 2 agentic-search pair: zero index, zero embedding, path-guarded, ripgrep-first with a pure-Python fallback), `todo_write` and `todo_update` (the Phase 3 planning pair), `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `agent` (which spawns a sub-agent), `fetch_url`, plus the Phase 5 memory tools `memory_save` / `memory_search` / `memory_list` / `memory_forget` / `memory_confirm` / `memory_stats`. The search strategy lives in `prompts/search_strategy.py`; the model-routing rules in `config/model_routing.yaml`; the memory config in `config/memory.yaml`. Everything else is the CLI shell, config, and packaging wrapped around that engine core.
 
 ## A `while` loop is the whole agent
 

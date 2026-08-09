@@ -207,7 +207,45 @@ def enforcement_enabled() -> bool:
     return os.getenv(ENFORCE_PLANNING_ENV, "").strip().lower() in _TRUE
 
 
-def planning_guard(tool_name: str) -> str | None:
+# ---------------------------------------------------------------------------
+# Phase 5 memory hooks (default no-ops; wired by memory/integration.py).
+# Keeping them here (not importing memory) avoids an import cycle.
+# ---------------------------------------------------------------------------
+_memory_injector = None  # fn(query: str) -> str  (a memory prompt section)
+_pending_memory_section = ""
+_plan_complete_hook = None  # fn(plan: TaskPlan) -> None
+
+
+def set_memory_injector(fn) -> None:
+    global _memory_injector
+    _memory_injector = fn
+
+
+def get_pending_memory_section() -> str:
+    """The memory section staged by planning_guard for the next todo_write."""
+    return _pending_memory_section
+
+
+def clear_pending_memory_section() -> None:
+    global _pending_memory_section
+    _pending_memory_section = ""
+
+
+def set_plan_complete_hook(fn) -> None:
+    global _plan_complete_hook
+    _plan_complete_hook = fn
+
+
+def notify_plan_complete(plan) -> None:
+    """Called by todo_update when the last step becomes done."""
+    if _plan_complete_hook is not None:
+        try:
+            _plan_complete_hook(plan)
+        except Exception:  # noqa: BLE001 - settlement must never break the tool
+            pass
+
+
+def planning_guard(tool_name: str, query: str | None = None) -> str | None:
     """Consulted by agent._exec_tool before every tool call.
 
     Returns an error string to BLOCK the tool, or None to allow it.
@@ -218,7 +256,18 @@ def planning_guard(tool_name: str) -> str | None:
         behaviour), hard-blocked only when CORECODER_ENFORCE_PLANNING=1;
       * with an ACTIVE plan: plan discipline is enforced — the current step
         must be marked in_progress before a mutation tool runs.
+
+    Phase 5 (side effect, never blocks): when the agent is about to create a
+    plan (todo_write) and a query is supplied, a relevant-memory section is
+    staged for TodoWriteTool to prepend to its output. `planning_guard("todo_write")`
+    still returns None regardless — the memory section is a side channel.
     """
+    global _pending_memory_section
+    if tool_name == "todo_write" and query and _memory_injector is not None:
+        try:
+            _pending_memory_section = _memory_injector(query) or ""
+        except Exception:  # noqa: BLE001 - injection must never break planning
+            _pending_memory_section = ""
     if tool_name in EXPLORATION_TOOLS | PLANNING_TOOLS:
         return None
     if tool_name not in MUTATION_TOOLS and not tool_name.startswith("mcp_"):

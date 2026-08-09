@@ -165,6 +165,21 @@ CoreCoder 从「单个聪明的 Agent」升级为「可编排的智能体系统�
 - **Streamable HTTP 传输**（MCP 2025-03-26）：POST 响应体即 SSE 流，与既有 SSE 传输并存。
 - **评测体系**（`corecoder/eval/`）：编排效率指标（委派准确率、加速比、上下文膨胀率、LSP 采用率）、失败模式知识库、增量验证仪表盘。
 
+### Phase 5：混合检索记忆
+
+跨会话记忆系统，重启后依然有效，**零基础设施**、**渐进式降级**（每个可选后端缺失都能优雅退回）：
+
+- **存储层**（`corecoder/memory/store.py`）：两个同构 SQLite 库——项目级（`<repo>/.corecoder/memory.db`）与全局级（`~/.corecoder/memory.db`）。各含 `memories` 主表、应用层手动管理的 FTS5 索引（`tokenize='ascii'`，写入前经 jieba/bigram 分词）、以及 `embeddings` 向量表。
+- **分词**（`corecoder/memory/tokenizer.py`）：有 jieba 用词级分词，没有则退回零依赖 CJK bigram 分词器——两者都保证**词级**中文匹配（搜「认证模块」能命中含「认证模块使用JWT…」的记忆），而非单字。
+- **嵌入器**（`corecoder/memory/embedder.py`）：`fastembed` → `sentence-transformers` → 内置确定性 hashing 后端（numpy），或 `none`。重模型懒加载，各后端共享自研有界 LRU 缓存。
+- **向量**（`store._NumpyVectorBackend` / `_Vec0VectorBackend`）：能加载 `sqlite-vec` 用 `vec0`，否则对 BLOB 列做 numpy 暴力余弦——零额外依赖也能跑通混合链路。
+- **混合检索**（`corecoder/memory/retriever.py`）：BM25（FTS5，双库）+ 向量余弦，用 Reciprocal Rank Fusion（`k=60`）融合；范围/类型/最低置信度/废弃 过滤用批量 `IN` 查询。
+- **置信度衰减**（`corecoder/memory/maintenance.py`）：`auto` 记忆 30 天未访问（≥3 次访问）置信度下降——项目 ×0.8、全局 ×0.95——跌破阈值标记 `deprecated_by='decayed'`，由 `compact()` 清理。`user` / `confirmed` 记忆永不衰减。
+- **六个工具**：`memory_save` / `memory_search` / `memory_list` / `memory_forget` / `memory_confirm` / `memory_stats`。保存先去重（余弦 > 0.85 更新而非新建）并做敏感信息脱敏。
+- **集成**：`todo_write` 前经 `planning_guard` 注入相关记忆；Self-Correction 修复成功后沉淀 `pattern` 记忆；计划完成时把决策提炼为 `decision` 记忆。
+
+配置见 `config/memory.yaml`（`embedder.backend`、`rrf_k`、`max_tokens`、`decay_days` 等），全部可选且懒加载。
+
 ## 读懂它：代码地图
 
 整个项目摊开就这么大，clone 之前扫一眼，心里就有数了。这也是它和 Claude Code 几十万行最实在的区别：你能把它当一本书的目录来读。建议从 `agent.py` 的主循环读起，那是整个 agent 的心脏。
@@ -205,10 +220,21 @@ corecoder/
     ├── glob_tool.py  文件名匹配（旧）                   47 行
     ├── write.py      文件写入                           38 行
     ├── agent.py      子 agent 派生                      58 行
-    └── base.py       工具基类                           27 行
+    ├── base.py       工具基类                           27 行
+    └── memory_tools.py  六个记忆工具                    ~160 行   ← Phase 5
+└── memory/          混合检索记忆系统                    ~700 行   ← Phase 5
+    ├── store.py      双库 SQLite + FTS5 + 向量后端      300 行
+    ├── retriever.py  BM25+向量 RRF 融合                 120 行
+    ├── embedder.py   多后端嵌入 + LRU                   150 行
+    ├── tokenizer.py  jieba→bigram 降级分词               80 行
+    ├── maintenance.py 置信度衰减 + compact + stats       90 行
+    ├── prompt.py     记忆段注入 + token 预算             90 行
+    ├── integration.py 接入 planning_guard / Self-Correction  110 行
+    ├── security.py   敏感信息脱敏                       60 行
+    └── types.py      数据模型                           110 行
 ```
 
-（容器镜像本身由仓库根目录的 `sandbox/Dockerfile` 构建。）十三个工具：`execute_in_sandbox`（`bash` 的沙箱版继任者）、`sync_workspace`（拉回沙箱变更）、`grep_search` 与 `list_files`（Phase 2 纯工具驱动搜索对：零索引、零向量、路径受控、rg 优先 + 纯 Python 兜底）、`todo_write` 与 `todo_update`（Phase 3 规划对）、`read_file`、`write_file`、`edit_file`、`glob`、`grep`、`agent`（派子 agent）、`fetch_url`。搜索策略在 `prompts/search_strategy.py`；模型路由规则在 `config/model_routing.yaml`。其余都是包在引擎核心外面的 CLI 外壳、配置和打包。
+（容器镜像本身由仓库根目录的 `sandbox/Dockerfile` 构建。）十九个工具：`execute_in_sandbox`（`bash` 的沙箱版继任者）、`sync_workspace`（拉回沙箱变更）、`grep_search` 与 `list_files`（Phase 2 纯工具驱动搜索对：零索引、零向量、路径受控、rg 优先 + 纯 Python 兜底）、`todo_write` 与 `todo_update`（Phase 3 规划对）、`read_file`、`write_file`、`edit_file`、`glob`、`grep`、`agent`（派子 agent）、`fetch_url`、以及 Phase 5 的 `memory_save` / `memory_search` / `memory_list` / `memory_forget` / `memory_confirm` / `memory_stats`。搜索策略在 `prompts/search_strategy.py`；模型路由规则在 `config/model_routing.yaml`；记忆配置在 `config/memory.yaml`。其余都是包在引擎核心外面的 CLI 外壳、配置和打包。
 
 ## 一个 while 循环就是 agent 的本体
 

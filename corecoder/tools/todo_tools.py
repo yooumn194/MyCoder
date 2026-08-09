@@ -12,7 +12,10 @@ from ..planner import (
     TaskPlan,
     TodoItem,
     TodoStatus,
+    clear_pending_memory_section,
+    get_pending_memory_section,
     get_plan_store,
+    notify_plan_complete,
     set_active_plan,
 )
 from .base import Tool
@@ -76,6 +79,13 @@ class TodoWriteTool(Tool):
         result = f"✅ 计划已创建：{len(items)} 步"
         if validation_error:  # ⚠️ 警告信息附带返回
             result += f"\n{validation_error}"
+
+        # Phase 5: prepend the memory section staged by planning_guard (if any)
+        # so a fresh plan is informed by cross-session memories.
+        section = get_pending_memory_section()
+        clear_pending_memory_section()
+        if section:
+            result = section + result
         return result
 
 
@@ -125,4 +135,10 @@ class TodoUpdateTool(Tool):
         item.status = status
         self._store.save(plan)
         set_active_plan(plan)
+        # Phase 5: when the whole plan is done, notify the memory integration
+        # (default hook is a no-op) so the finished plan is distilled.
+        if status == TodoStatus.DONE and all(
+            t.status == TodoStatus.DONE for t in plan.items
+        ):
+            notify_plan_complete(plan)
         return f"✅ 步骤 [{step_id}] 已标记为 {status}"

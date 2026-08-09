@@ -35,3 +35,67 @@ def _isolate_environment(monkeypatch):
     # from_env() re-reads .env; make that a no-op so a local .env can never
     # override the pinned state above.
     monkeypatch.setattr(config_mod, "_load_dotenv", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _reset_memory_state():
+    """Phase 5: reset process-wide memory singletons and integration hooks so a
+    test that installs hooks / builds a singleton store never leaks into the
+    next test (and never writes to the developer's real ~/.corecoder)."""
+    yield
+    from corecoder import planner
+    from corecoder.memory import reset_store
+    from corecoder.tools import correction
+
+    reset_store()
+    planner._memory_injector = None  # noqa: SLF001
+    planner._pending_memory_section = ""  # noqa: SLF001
+    planner._plan_complete_hook = None  # noqa: SLF001
+    planner._active_plan = None  # noqa: SLF001
+    planner._active_store = None  # noqa: SLF001
+    correction.recovery_hook = None  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 memory fixtures (tmp_path-backed; never touch ~/.corecoder)
+# ---------------------------------------------------------------------------
+class _ControlledEmbedder:
+    """Deterministic char+position embedder used by tests.
+
+    Each (character, position) votes into one of 512 buckets (L2-normalized), so:
+      * near-identical texts (same chars at same positions) get cosine > 0.85
+        and trigger dedup;
+      * texts that merely share vocabulary get low cosine and stay distinct —
+        so multi-doc ranking tests are not silently merged by dedup.
+    """
+
+    def embed(self, text):
+        import hashlib
+
+        import numpy as np
+
+        vec = np.zeros(512, dtype=np.float32)
+        for i, ch in enumerate(text):
+            key = f"{ch}{i}"
+            h = int.from_bytes(hashlib.md5(key.encode("utf-8")).digest()[:4], "little")
+            vec[h % 512] += 1.0
+        norm = np.linalg.norm(vec)
+        return vec / norm if norm else vec
+
+
+@pytest.fixture
+def memory_store(tmp_path):
+    from corecoder.memory import MemoryStore
+
+    return MemoryStore(
+        project_dir=tmp_path / "proj",
+        global_dir=tmp_path / "glob",
+        embedder=_ControlledEmbedder(),
+    )
+
+
+@pytest.fixture
+def memory_retriever(memory_store):
+    from corecoder.memory import HybridRetriever
+
+    return HybridRetriever(memory_store)

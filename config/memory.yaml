@@ -1,0 +1,29 @@
+# Phase 5 memory system configuration.
+# All values have code-level defaults; this file only overrides them.
+# The system degrades gracefully when optional backends are missing:
+#   * no jieba        -> bigram tokenizer (word-level, not single-char)
+#   * no sqlite-vec   -> numpy brute-force vector search
+#   * no fastembed / sentence-transformers -> deterministic hashing embedder
+#   * backend: none   -> BM25-only retrieval
+
+memory:
+  # Reciprocal-rank-fusion constant for the hybrid retriever (BM25 + vector).
+  rrf_k: 60
+
+  # Token budget for the memory section injected before todo_write.
+  max_tokens: 2048
+
+  # Confidence decay: memories untouched for this many days lose confidence.
+  decay_days: 30
+
+  # Results below this confidence are filtered out of search / injected sections.
+  confidence_threshold: 0.1
+
+  # Redact secrets (api keys, tokens, PEM blocks) before persisting.
+  filter_sensitive: true
+
+  embedder:
+    # fastembed | sentence-transformers | hashing | none
+    backend: fastembed
+    # 512-dim Chinese model (bge-small-zh-v1.5). Hashing fallback always emits 512 dims.
+    model: BAAI/bge-small-zh-v1.5

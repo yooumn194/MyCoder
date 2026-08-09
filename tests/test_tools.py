@@ -24,6 +24,12 @@ def test_tool_count():
         "fetch_url",
         "todo_write",
         "todo_update",
+        "memory_save",
+        "memory_search",
+        "memory_list",
+        "memory_forget",
+        "memory_confirm",
+        "memory_stats",
     }
 
 

@@ -13,6 +13,14 @@ from .sandbox_tool import ExecuteInSandboxTool
 from .subagent_tools import SpawnSubagentTool
 from .sync_tool import SyncWorkspaceTool
 from .todo_tools import TodoUpdateTool, TodoWriteTool
+from .memory_tools import (
+    MemoryConfirmTool,
+    MemoryForgetTool,
+    MemoryListTool,
+    MemorySaveTool,
+    MemorySearchTool,
+    MemoryStatsTool,
+)
 
 
 ALL_TOOLS = [
@@ -37,6 +45,13 @@ ALL_TOOLS = [
     TodoWriteTool(),
     TodoUpdateTool(),
     SpawnSubagentTool(),
+    # Phase 5 memory tools (lazy store — no side effects at import time)
+    MemorySaveTool(),
+    MemorySearchTool(),
+    MemoryListTool(),
+    MemoryForgetTool(),
+    MemoryConfirmTool(),
+    MemoryStatsTool(),
 ]
 
 

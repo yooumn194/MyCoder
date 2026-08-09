@@ -33,6 +33,13 @@ def test_public_api_exports():
         "fetch_url",
         "todo_write",
         "todo_update",
+        # Phase 5 memory tools
+        "memory_save",
+        "memory_search",
+        "memory_list",
+        "memory_forget",
+        "memory_confirm",
+        "memory_stats",
     }
 
 

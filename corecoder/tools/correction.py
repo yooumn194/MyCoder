@@ -24,6 +24,16 @@ class CorrectionStrategy(str, Enum):
 # timeout=30 call retried 3x doubles to 240s and feels hung to the operator.
 MAX_RETRY_TIMEOUT = 300
 
+# Phase 5: called when a retry eventually succeeds (attempt > 0). Wired by
+# memory/integration.py to distill a PatternMemory; default is a no-op so the
+# retry loop never depends on the memory system.
+recovery_hook = None
+
+
+def set_recovery_hook(fn) -> None:
+    global recovery_hook
+    recovery_hook = fn
+
 
 class UserEscalationError(Exception):
     """A human decision is required (permissions, ambiguous business intent)."""
@@ -114,9 +124,22 @@ def run_with_correction(
     The agent's `_exec_tool` routes every tool call through this wrapper.
     """
     attempt = 0
+    strategy = None
+    params: dict = {}
     while True:
         try:
-            return fn(**kwargs)
+            result = fn(**kwargs)
+            if attempt > 0 and recovery_hook is not None:
+                try:
+                    recovery_hook(
+                        fn_name=getattr(fn, "__name__", repr(fn)),
+                        strategy=strategy,
+                        params=params,
+                        kwargs=kwargs,
+                    )
+                except Exception:  # noqa: BLE001 - settlement must never break
+                    pass
+            return result
         except Exception as exc:
             strategy, params = ErrorClassifier.classify(exc)
             attempt += 1

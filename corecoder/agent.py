@@ -9,9 +9,12 @@ It keeps looping until the LLM responds with plain text (no tool calls),
 which means it's done working and ready to report back.
 """
 
+from __future__ import annotations
+
 import concurrent.futures
 import inspect
 from .llm import LLM
+from .memory.integration import MemoryIntegration
 from .planner import planning_guard
 from .tools import ALL_TOOLS
 from .tools.base import Tool
@@ -29,6 +32,7 @@ class Agent:
         tools: list[Tool] | None = None,
         max_context_tokens: int = 128_000,
         max_rounds: int = 50,
+        memory: MemoryIntegration | None = None,
     ):
         self.llm = llm
         self.tools = tools if tools is not None else ALL_TOOLS
@@ -37,6 +41,10 @@ class Agent:
         self.context = ContextManager(max_tokens=max_context_tokens)
         self.max_rounds = max_rounds
         self._system = system_prompt(self.tools)
+        # Phase 5: optional memory integration (CLI wires one; idempotent).
+        self.memory = memory
+        if memory is not None:
+            memory.install()
 
         # wire up sub-agent capability
         for t in self.tools:
@@ -111,7 +119,7 @@ class Agent:
         # Phase 3 planning guard: soft/hard interception at the dispatch layer
         # (see corecoder/planner.py). Soft mode preserves open-ended editing;
         # CORECODER_ENFORCE_PLANNING=1 hard-blocks mutation without a plan.
-        guard_msg = planning_guard(tc.name)
+        guard_msg = planning_guard(tc.name, query=tc.arguments.get("task_goal"))
         if guard_msg:
             return guard_msg
         # validate arguments first so a TypeError raised *inside* the tool isn't

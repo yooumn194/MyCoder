@@ -46,7 +46,14 @@ sandbox = ["docker>=7.0.0"]
 # aiohttp is imported lazily, so a pure-stdio install never pays for it.
 sse = ["aiohttp>=3.9"]
 mcp = ["aiohttp>=3.9"]
-dev = ["pytest>=7.0", "pytest-asyncio>=0.23.0", "ruff>=0.9.0", "aiohttp>=3.9"]
+# Phase 5 memory: everything is optional + lazily imported. `memory` gives the
+# word-segmentation + token-count + numpy vector path; the heavier backends are
+# opt-in extras that still degrade cleanly when absent.
+memory = ["jieba", "numpy", "tiktoken"]
+memory-vec = ["sqlite-vec>=0.1.0"]
+memory-embed = ["fastembed>=0.3.0"]
+memory-embed-torch = ["sentence-transformers>=2.7.0"]
+dev = ["pytest>=7.0", "pytest-asyncio>=0.23.0", "ruff>=0.9.0", "aiohttp>=3.9", "jieba", "numpy", "tiktoken"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

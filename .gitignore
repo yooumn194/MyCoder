@@ -15,3 +15,5 @@ venv/
 .DS_Store
 .pytest_cache/
 .tmp/
+# Phase 5 runtime state: project-level memory db + plan store live here
+.corecoder/

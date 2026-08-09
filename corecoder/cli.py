@@ -79,7 +79,34 @@ def main():
         tools = [*ALL_TOOLS, *load_mcp_tools()]
     except Exception:  # noqa: BLE001 - MCP is optional
         tools = ALL_TOOLS
-    agent = Agent(llm=llm, tools=tools, max_context_tokens=config.max_context_tokens)
+
+    # Phase 5: cross-session memory — config/memory.yaml, best-effort wiring.
+    # The memory tools in ALL_TOOLS resolve the same singleton store, so the
+    # REPL's tools and the planning_guard injection share one database.
+    memory = None
+    try:
+        from .memory.config import load_memory_config
+        from .memory.integration import MemoryIntegration
+        from .memory.retriever import HybridRetriever
+        from .memory.store import get_store
+
+        mem_cfg = load_memory_config()["memory"]
+        store = get_store(mem_cfg.get("embedder"))
+        store.filter_sensitive = bool(mem_cfg.get("filter_sensitive", True))
+        retriever = HybridRetriever(store, rrf_k=int(mem_cfg.get("rrf_k", 60)))
+        memory = MemoryIntegration(
+            store=store,
+            retriever=retriever,
+            max_tokens=int(mem_cfg.get("max_tokens", 2048)),
+        ).install()
+    except Exception:  # noqa: BLE001 - memory is optional
+        memory = None
+    agent = Agent(
+        llm=llm,
+        tools=tools,
+        max_context_tokens=config.max_context_tokens,
+        memory=memory,
+    )
 
     # resume saved session
     if args.resume:
