@@ -2,22 +2,22 @@
 
 # CoreCoder
 
-**The nanoGPT of coding agents. 1,081 lines of pure Python — understand how a coding agent actually works, then fork your own.**
+**The nanoGPT of coding agents. The main loop is still ~40 lines; the Phase 1–5 production shape around it is ~10,400 lines of Python across 86 files — understand how a coding agent actually works, then fork your own.**
 
 *learn from it · fork it · ship something better*
 
 [中文](README_CN.md) | English | [Source-reading series · 8 bilingual essays](article/00-index_EN.md)
 
 [![PyPI](https://img.shields.io/pypi/v/corecoder)](https://pypi.org/project/corecoder/)
-[![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
+[![Python](https://img.shields.io/badge/python-3.11+-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Tests](https://github.com/he-yufeng/CoreCoder/actions/workflows/ci.yml/badge.svg)](https://github.com/he-yufeng/CoreCoder/actions)
-[![engine](https://img.shields.io/badge/engine-1081_LoC-blue)](article/00-index_EN.md)
+[![engine](https://img.shields.io/badge/engine-~10.4k_LoC-blue)](article/00-index_EN.md)
 [![essays](https://img.shields.io/badge/source--reading-8_bilingual-orange)](article/00-index_EN.md)
 
 </div>
 
-- **Readable end to end.** Read the whole engine in an afternoon, with no magic hidden anywhere you can't follow it.
+- **Readable end to end.** Every subsystem is plain Python you can follow — sandbox, MCP, multi-agent, memory — with no magic hidden anywhere you can't trace.
 - **Hackable.** Set a breakpoint on any line, change it, rerun, all on your own machine. It genuinely works, which makes this a living reference rather than a diagram.
 - **The gaps are the point.** It deliberately keeps only the minimal core; what's missing isn't half-finished, it's where you branch off and make it your own.
 
@@ -25,7 +25,7 @@
 
 | | CoreCoder | Claude Code | aider | nanoGPT |
 |---|---|---|---|---|
-| Lines of code | ~1,081 engine / 1,714 total | hundreds of thousands (closed) | tens of thousands of Python | ~600 (two files) |
+| Lines of code | ~3,600 engine / ~10,400 total | hundreds of thousands (closed) | tens of thousands of Python | ~600 (two files) |
 | Time to read it all | one afternoon | can't (closed) | a few days of slogging | one afternoon |
 | Breakpoint, change, rerun? | yes, every line | no | yes, but there's a lot | yes |
 | What it's for | understand one, then fork your own | production coding assistant | terminal pair-programming | minimal GPT for teaching |
@@ -34,11 +34,11 @@ The nanoGPT column is there as a reference point: minimal, readable, but it teac
 
 ## What this is
 
-I've always felt coding agents get talked about as if they were arcane. Strip a tool like Claude Code or Cursor all the way down and the core is a `while` loop wrapped around a large model, plus seven or eight tools that let it actually do things. The hard part was never the loop; it's everything the loop has to cope with once it meets the real world. CoreCoder is the minimal version that writes that core out honestly.
+I've always felt coding agents get talked about as if they were arcane. Strip a tool like Claude Code or Cursor all the way down and the core is a `while` loop wrapped around a large model, plus a handful of tools that let it actually do things. The hard part was never the loop; it's everything the loop has to cope with once it meets the real world. CoreCoder is the version that writes that core out honestly, then lets Phases 1–5 grow real-world plumbing around it without hiding any of it.
 
-The engine (loop, model interface, context, tools, sessions) is 1,081 lines once you drop blank lines and comments. Counting the outer CLI, config and packaging too, the whole package is 18 files: 1,714 physical lines, 1,385 net, every one short enough to read in a single sitting.
+The core loop (agent, model interface, context, sessions, planning, the tool files) is ~3,600 lines once you drop blank lines and comments — the main loop itself is still about 40. Counting everything Phases 1–5 added — the Docker sandbox, the MCP client, multi-agent orchestration, the result contract, evaluation, and the hybrid-retrieval memory system — the whole package is 86 files: ~10,400 physical lines, 8,502 net, every subsystem still plain Python you can read in a sitting.
 
-And it really runs: reads and writes files, executes shell in a sandbox, spawns sub-agents, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. 400 tests, all green (the container integration tests skip themselves when Docker is unavailable). But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
+And it really runs: reads and writes files, executes shell in a hardened sandbox, speaks MCP, spawns sub-agents, keeps cross-session memory, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. 447 tests, all green (445 run + 2 container integration tests that skip themselves when Docker is unavailable). But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
 
 The code came out of a public teardown: open analyses have already exposed a lot of the load-bearing architecture inside production agents like Claude Code. I took the most essential layer and rewrote it honestly, in as little code as I could. So reading CoreCoder is roughly like reading a runnable, annotated take on how that kind of agent works, except it's only a minimal reimplementation, sitting right there on your machine for you to take apart and change.
 
@@ -138,6 +138,22 @@ If Docker isn't reachable the agent degrades gracefully instead of dying: it
 **fails closed** by default, and only runs commands on the host with an
 allowlist, a timeout, and a WARNING audit log after you confirm — set
 `CORECODER_ALLOW_LOCAL_EXEC=1` for unattended opt-in.
+
+### Phase 2: pure-tool search
+
+The agent finds code by *searching*, not by a hand-built index. Phase 2 added
+the agentic-search pair plus the gate both share:
+
+- **`grep_search`** runs ripgrep when it's on `PATH` and falls back to a
+  pure-Python scan otherwise (10–50× slower on huge trees, identical output).
+  **`list_files`** finds files by glob. Both are path-guarded and symlink-safe.
+- **`path_guard`** is the single gate in front of them: no traversal out of the
+  workspace, no symlink escapes (a macOS `/var` symlinked-root gotcha is
+  handled), before any tool touches the filesystem.
+- **`prompts/search_strategy.py`** teaches the agent *how* to search — narrow
+  with targeted greps instead of reading whole files — so exploration stays
+  cheap even on large repos. Zero index, zero vectors: the whole strategy is
+  pure tools.
 
 ### Phase 3: plan, correct, route
 
@@ -280,55 +296,75 @@ Laid out flat, the whole project is this big. Skim it before you clone and you'l
 
 ```
 corecoder/
-├── agent.py        agent loop + parallel tool exec       155 lines   ← start here
-├── llm.py          streaming client + retry + cost        336 lines
-├── context.py      three-tier context compaction          210 lines
-├── session.py      save / resume + path-traversal guard    97 lines
-├── prompt.py       system prompt + search strategy         40 lines
-├── prompts/        reusable prompt segments                35 lines   ← Phase 2
-├── cli.py          REPL + slash commands + one-shot       270 lines
-├── config.py       env-var config                          57 lines
-├── planner.py      planning engine (Todo/Plan/Guard)      243 lines   ← Phase 3
-├── model_router.py task→model-tier routing (YAML)         104 lines   ← Phase 3
-├── sandbox/        Docker-backed command isolation        ~1200 lines   ← Phase 1
-│   ├── docker_executor.py  hardened container lifecycle   440 lines
-│   ├── executor.py         backend selection + fallback   230 lines
-│   ├── sync.py             /workspace <-> host sync       160 lines
-│   ├── policy.py           permission confirm + cache    230 lines
-│   ├── local_executor.py   degraded host allowlist        160 lines
-│   └── logger.py·models.py·locking.py                      90 lines
-└── tools/
-    ├── sandbox_tool.py  execute_in_sandbox (replaces bash) 165 lines
-    ├── sync_tool.py     sync_workspace (pull changes back)  90 lines
-    ├── grep_search.py   rg-first regex search + fallback    230 lines   ← Phase 2
-    ├── list_files.py    glob file lookup (symlink-safe)      90 lines    ← Phase 2
-    ├── read_file.py     read + ranges + 300-line cap         140 lines
-    ├── path_guard.py    shared path-traversal/symlink gate    70 lines   ← Phase 2
-    ├── todo_tools.py    todo_write / todo_update (planning)  128 lines   ← Phase 3
-    ├── correction.py    error→strategy self-correction       125 lines   ← Phase 3
-    ├── mcp_lite.py      MCP client + structured timeouts     128 lines   ← Phase 3
-    ├── workspace_path.py  /workspace path mapping          55 lines
-    ├── bash.py       pre-check regex gate (kept as helper) 127 lines
-    ├── edit.py       unique-match search/replace + diff    92 lines
-    ├── grep.py       content search (legacy)               79 lines
-    ├── glob_tool.py  filename matching (legacy)            47 lines
-    ├── write.py      file write                            38 lines
-    ├── agent.py      sub-agent spawning                    58 lines
-    ├── base.py       tool base class                       27 lines
-    └── memory_tools.py  six memory tools                 ~160 lines   ← Phase 5
-└── memory/          hybrid-retrieval memory system        ~700 lines   ← Phase 5
-    ├── store.py      dual-db SQLite + FTS5 + vector backends  300 lines
-    ├── retriever.py  BM25 + vector, RRF fusion              120 lines
-    ├── embedder.py   multi-backend embeddings + LRU         150 lines
-    ├── tokenizer.py  jieba→bigram degraded tokenization      80 lines
-    ├── maintenance.py confidence decay + compact + stats     90 lines
-    ├── prompt.py     memory-section injection + token budget 90 lines
-    ├── integration.py planning_guard / Self-Correction wiring 110 lines
-    ├── security.py   sensitive-info redaction               60 lines
-    └── types.py      data models                           110 lines
+├── agent.py          agent loop + parallel tool exec       172 lines   ← start here
+├── llm.py            streaming client + retry + cost        344 lines
+├── context.py        three-tier context compaction          210 lines
+├── session.py        save / resume + path-traversal guard    97 lines
+├── prompt.py         system prompt + search strategy         39 lines
+├── prompts/          reusable prompt segments                36 lines   ← Phase 2
+├── cli.py            REPL + slash commands + one-shot       306 lines
+├── config.py         env-var config                          57 lines
+├── planner.py        planning engine (Todo/Plan/Guard)      298 lines   ← Phase 3
+├── model_router.py   task→model-tier routing (YAML)         104 lines   ← Phase 3
+├── sandbox/          Docker-backed command isolation        1568 lines  ← Phase 1
+│   ├── docker_executor.py  hardened container lifecycle     495 lines
+│   ├── executor.py         backend selection + fallback     229 lines
+│   ├── sync.py             /workspace <-> host sync         255 lines
+│   ├── policy.py           permission confirm + cache       284 lines
+│   ├── local_executor.py   degraded host allowlist          160 lines
+│   └── models·logger·locking·__init__                       145 lines
+├── mcp/              MCP client (stdio/SSE/Streamable)      1623 lines  ← Phase 3.5/4
+│   ├── client.py     transports + retry                      92 lines
+│   ├── registry.py   server loading + tool registration      166 lines
+│   ├── adapter.py    MCP tool adapters                       131 lines
+│   ├── security.py   per-server allowlist + param regexes     44 lines
+│   ├── lsp_metadata.py · lsp_compressor.py  LSP intelligence  225 lines  ← Phase 4
+│   └── config·errors·observability·runtime·__init__          203 lines
+├── agents/           multi-agent orchestration               819 lines  ← Phase 4
+│   ├── orchestrator.py  seq/parallel/conditional + breaker   306 lines
+│   ├── runner.py        sub-agent executor                   272 lines
+│   ├── definition.py    SubagentDefinition                    78 lines
+│   ├── blackboard.py    shared KV + TTL                       60 lines
+│   └── tool_validator.py sub-agent tool validation            87 lines
+├── contracts/        RFC envelope + Pydantic validation      609 lines  ← Phase 4
+│   ├── subagent_result.py  envelope + state-combination matrix  321 lines
+│   └── envelope.py · prompts.py                              288 lines
+├── eval/             evaluation harness (metrics·runner·kb·dashboard)  226 lines  ← Phase 4
+├── memory/           hybrid-retrieval memory system          1588 lines  ← Phase 5
+│   ├── store.py      dual-db SQLite + FTS5 + vector backends  619 lines
+│   ├── embedder.py   multi-backend embeddings + LRU           198 lines
+│   ├── retriever.py  BM25 + vector, RRF fusion                103 lines
+│   ├── maintenance.py confidence decay + compact + stats      113 lines
+│   ├── integration.py planning_guard / Self-Correction wiring 130 lines
+│   ├── types.py      data models                              129 lines
+│   ├── tokenizer.py  jieba→bigram degraded tokenization        75 lines
+│   ├── prompt.py     memory-section injection + token budget   74 lines
+│   └── config·security·__init__                               147 lines
+└── tools/            twenty tools                             2299 lines
+    ├── sandbox_tool.py  execute_in_sandbox (replaces bash)    184 lines
+    ├── sync_tool.py     sync_workspace (pull changes back)     76 lines
+    ├── grep_search.py   rg-first regex search + fallback       232 lines  ← Phase 2
+    ├── list_files.py    glob file lookup (symlink-safe)         96 lines  ← Phase 2
+    ├── path_guard.py    shared path-traversal/symlink gate      78 lines  ← Phase 2
+    ├── read_file.py     read + ranges + 300-line cap           127 lines
+    ├── todo_tools.py    todo_write / todo_update (planning)    144 lines  ← Phase 3
+    ├── correction.py    error→strategy self-correction         169 lines  ← Phase 3
+    ├── mcp_lite.py      MCP prototype client                   121 lines  ← Phase 3
+    ├── subagent_tools.py spawn_subagent                         83 lines  ← Phase 4
+    ├── memory_tools.py  six memory tools                       199 lines  ← Phase 5
+    ├── fetch.py         fetch_url                               40 lines
+    ├── workspace_path.py  /workspace path mapping               57 lines
+    ├── bash.py          pre-check regex gate (kept as helper)  127 lines
+    ├── edit.py          unique-match search/replace + diff      92 lines
+    ├── grep.py          content search (legacy)                 84 lines
+    ├── glob_tool.py     filename matching (legacy)              52 lines
+    ├── batch_diagnostics.py  sandbox diagnostics helper          41 lines
+    ├── write.py         file write                              45 lines
+    ├── agent.py         sub-agent spawning                     162 lines
+    └── base.py          tool base class                         27 lines
 ```
 
-(The container image itself is built from `sandbox/Dockerfile` at the repo root.) Nineteen tools: `execute_in_sandbox` (the sandboxed successor to `bash`), `sync_workspace`, `grep_search` and `list_files` (the Phase 2 agentic-search pair: zero index, zero embedding, path-guarded, ripgrep-first with a pure-Python fallback), `todo_write` and `todo_update` (the Phase 3 planning pair), `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `agent` (which spawns a sub-agent), `fetch_url`, plus the Phase 5 memory tools `memory_save` / `memory_search` / `memory_list` / `memory_forget` / `memory_confirm` / `memory_stats`. The search strategy lives in `prompts/search_strategy.py`; the model-routing rules in `config/model_routing.yaml`; the memory config in `config/memory.yaml`. Everything else is the CLI shell, config, and packaging wrapped around that engine core.
+(The container image itself is built from `sandbox/Dockerfile` at the repo root.) Twenty tools: `execute_in_sandbox` (the sandboxed successor to `bash`), `sync_workspace`, `grep_search` and `list_files` (the Phase 2 agentic-search pair: zero index, zero embedding, path-guarded, ripgrep-first with a pure-Python fallback), `todo_write` and `todo_update` (the Phase 3 planning pair), `spawn_subagent` (Phase 4), the Phase 5 memory tools `memory_save` / `memory_search` / `memory_list` / `memory_forget` / `memory_confirm` / `memory_stats`, and the Phase 1/2 file tools `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `fetch_url`, `agent` (which spawns a sub-agent). The search strategy lives in `prompts/search_strategy.py`; the model-routing rules in `config/model_routing.yaml`; MCP servers in `config/mcp_servers.yaml` (all opt-in); the memory config in `config/memory.yaml`. Everything else is the CLI shell, config, and packaging wrapped around that engine core.
 
 ## A `while` loop is the whole agent
 
@@ -349,7 +385,7 @@ def chat(self, user_input):
     return "(hit the round limit)"
 ```
 
-That's the whole thing. The core skeleton is about twenty lines; counting parallel execution and the bookkeeping after a Ctrl+C interrupt, maybe forty. Almost everything else in CoreCoder's thousand-odd lines is there to clean up the mess the loop runs into once it meets the real world. `llm.py` ends up the biggest file in the project, not because calling a model is hard, but because a streamed response splinters each tool call's arguments into fragments you have to restitch in order, a provider will hand you half a JSON object or a null `usage` field, and 429s, timeouts, dropped connections and 5xx all need backoff-and-retry while the other 4xx should just raise. That unglamorous grunt work, not the loop, is where the real engineering of taking an agent from demo to delivery actually lives; the third essay follows it down to the line.
+That's the whole thing. The core skeleton is about twenty lines; counting parallel execution and the bookkeeping after a Ctrl+C interrupt, maybe forty. Almost everything else in CoreCoder's ~10,000 lines is there to clean up the mess the loop runs into once it meets the real world. `llm.py` — now 344 lines, among the biggest engine files — got that way not because calling a model is hard, but because a streamed response splinters each tool call's arguments into fragments you have to restitch in order, a provider will hand you half a JSON object or a null `usage` field, and 429s, timeouts, dropped connections and 5xx all need backoff-and-retry while the other 4xx should just raise. That unglamorous grunt work, not the loop, is where the real engineering of taking an agent from demo to delivery actually lives; the third essay follows it down to the line.
 
 Three decisions are worth a closer look, because they're the kind of call you can only make after you've understood how others did it, and they're judgments you can lift straight into your own fork.
 
@@ -378,9 +414,9 @@ I also wrote a bilingual source-reading series, one intro plus seven parts, each
 
 Once you understand it, the natural next step is to fork. Getting started doesn't take much:
 
-- **Swap in a model you actually use.** It's the two env vars from above; `llm.py` (336 lines) is the entry point for all provider adaptation.
+- **Swap in a model you actually use.** It's the two env vars from above; `llm.py` (344 lines) is the entry point for all provider adaptation.
 - **Add a tool of your own.** Write a new file against the tool base class in `tools/base.py` (27 lines): run tests, fetch a page, call an LSP, whatever. The end of the second essay walks you through your first one by hand.
-- **Rewrite the system prompt.** `prompt.py` is all of 33 lines; change one line and you'll watch the agent's temperament shift. It's the cheapest "change one thing, see a result" in the whole project.
+- **Rewrite the system prompt.** `prompt.py` is all of 39 lines; change one line and you'll watch the agent's temperament shift. It's the cheapest "change one thing, see a result" in the whole project.
 - **Import it as a library.** The top level exports `Agent`, `LLM`, and `Config`, ready to embed in your own program:
 
 ```python
@@ -394,8 +430,9 @@ Going deeper, the directions are out in the open too. None of the following is i
 
 - **The sandbox isolates the shell, not the whole agent.** `execute_in_sandbox` runs commands in a hardened container (no network, read-only rootfs, caps dropped, limits enforced), but file edits still land on your host through `edit_file`/`write_file`, and the sandbox workspace is surfaced as a diff rather than written back. Making file tools sandboxed too — or syncing the workspace out on exit — is the natural next step.
 - **Retry is only exponential backoff.** No fallback model, no hard dollar budget. Follow `llm.py` down and add a fallback model chain plus a stop-on-over-budget gate; the change stays mostly inside that one file.
-- **Sub-agents only run the plainest synchronous execution.** Make it async or a streaming executor and you close the exact gap the fifth essay identifies between this and how production agents stream execution.
-- **No MCP, no RAG.** Wire up MCP to give it the external tool ecosystem, or add retrieval-based code location for big repos. Both are real ways to grow from a minimal core into your own stronger agent.
+- **Sub-agent execution is orchestrated but not streamed.** Phase 4 added an async `Orchestrator` and validated envelopes, but the main agent's `spawn_subagent` still runs synchronously with truncated output. A streaming/async executor — the main agent keeps working while a sub-agent streams — closes the exact gap the fifth essay identifies between this and how production agents stream execution.
+- **Memory is a lean local retriever, not a full RAG index.** Phase 5's hybrid search is SQLite FTS5 + numpy vectors fused by RRF — great for cross-session notes, not a chunked-and-embedded index over a big repo. Wiring an external vector DB or code chunking over a large codebase is the natural next step.
+- **MCP is a client, not a marketplace.** Phase 3.5/4 give it a real MCP client (stdio/SSE/Streamable HTTP) and LSP intelligence, but servers are still configured by hand. Auto-discovering servers, or packaging the agent's own tools as an MCP server for other agents, are both open.
 
 The README only points; the seventh essay picks up the code details for each. Pick one and start; that's the whole reason the core is kept this small.
 
@@ -426,7 +463,7 @@ If working through CoreCoder was useful, here are a few other tools I've built a
 
 ## Contributing / License
 
-Before you send anything, run `pytest tests/ -q` (400 tests), `ruff check`, and `compileall`, and make sure they're green. The Docker-backed sandbox tests need the image built once: `docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`. MIT licensed: fork it, learn from it, ship something better. A mention of this project is appreciated.
+Before you send anything, run `pytest tests/ -q` (447 tests: 445 run + 2 Docker-gated skips), `ruff check`, and `compileall`, and make sure they're green. The Docker-backed sandbox tests need the image built once: `docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`. MIT licensed: fork it, learn from it, ship something better. A mention of this project is appreciated.
 
 ---
 

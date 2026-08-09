@@ -2,22 +2,22 @@
 
 # CoreCoder
 
-**编程 agent 里的 nanoGPT。1081 行纯 Python，读懂一个 coding agent 到底怎么运作，再 fork 出你自己的。**
+**编程 agent 里的 nanoGPT。主循环仍是约 40 行；Phase 1–5 在它外面铺成的生产级形态是 86 个文件、约 10,400 行 Python——读懂一个 coding agent 到底怎么运作，再 fork 出你自己的。**
 
 *learn from it · fork it · ship something better*
 
 中文 | [English](README.md) | [配套源码导读 · 八篇双语](article/)
 
 [![PyPI](https://img.shields.io/pypi/v/corecoder)](https://pypi.org/project/corecoder/)
-[![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
+[![Python](https://img.shields.io/badge/python-3.11+-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Tests](https://github.com/he-yufeng/CoreCoder/actions/workflows/ci.yml/badge.svg)](https://github.com/he-yufeng/CoreCoder/actions)
-[![engine](https://img.shields.io/badge/engine-1081_LoC-blue)](article/)
+[![engine](https://img.shields.io/badge/engine-~10.4k_LoC-blue)](article/)
 [![源码导读](https://img.shields.io/badge/源码导读-8篇双语-orange)](article/)
 
 </div>
 
-- **读得完。** 一个下午读完整个引擎，没有一处藏着你看不懂的魔法。
+- **读得完。** 每个子系统都是能一路跟到底的纯 Python——沙箱、MCP、多 Agent、记忆，没有一处藏着你看不懂的魔法。
 - **改得动。** 每一行都能在你自己机器上下断点、改了再跑。它真能干活，所以这份参考是活的，不是示意图。
 - **留白即起点。** 刻意只留最小核心，没做的那些不是半成品，是留给你 fork 出更好东西的地方。
 
@@ -25,7 +25,7 @@
 
 | | CoreCoder | Claude Code | aider | nanoGPT |
 |---|---|---|---|---|
-| 代码量 | 引擎约 1081 行 / 整包 1714 行 | 几十万行（闭源） | 数万行 Python | 约 600 行（两个文件） |
+| 代码量 | 引擎约 3,600 行 / 整包约 10,400 行 | 几十万行（闭源） | 数万行 Python | 约 600 行（两个文件） |
 | 读完要多久 | 一个下午 | 读不了（闭源） | 得啃几天 | 一个下午 |
 | 能不能下断点改了再跑 | 能，每一行 | 不能 | 能，但量大 | 能 |
 | 定位 | 读懂并 fork 出你自己的 agent | 生产级编程助手 | 终端结对编程 | 教学用最小 GPT |
@@ -34,11 +34,11 @@ nanoGPT 那一列是拿来对照的：它最小、可读，但教的是训一个
 
 ## 这是什么
 
-我一直觉得 coding agent 被讲得太玄了。把 Claude Code、Cursor 这类工具扒到底，核心是一个 while 循环套着一个大模型，外加七八个让它能真正动手的工具。难的从来不是这个循环，而是循环跑进真实世界以后要兜的那些底。CoreCoder 就是把这个核心老老实实写出来的最小版本。
+我一直觉得 coding agent 被讲得太玄了。把 Claude Code、Cursor 这类工具扒到底，核心是一个 while 循环套着一个大模型，外加一小组让它能真正动手的工具。难的从来不是这个循环，而是循环跑进真实世界以后要兜的那些底。CoreCoder 就是把这个核心老老实实写出来的版本，再用 Phase 1–5 在它外面长出一层真实世界的管道，且每一层都不藏着掖着。
 
-引擎部分（循环、模型接口、上下文、工具、会话）去掉空行和注释是 1081 行。连最外层的 CLI、配置、打包一起算，整个包 18 个文件、物理 1714 行、净 1385 行，每个文件都短到能一口气读完。
+核心循环（agent、模型接口、上下文、会话、规划、工具文件）去掉空行和注释约 3,600 行——主循环本身仍是约 40 行。把 Phase 1–5 加进来的东西全算上——Docker 沙箱、MCP 客户端、多 Agent 编排、结果契约、评测体系、混合检索记忆——整个包是 86 个文件、物理约 10,400 行、净 8,502 行，每个子系统依旧是能一口气读完的纯 Python。
 
-它真能跑：读写文件、在沙箱里执行 shell、派子 agent、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你，400 个测试是绿的（容器集成测试在 Docker 不可用时自动跳过）。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
+它真能跑：读写文件、在加固沙箱里执行 shell、讲 MCP、派子 agent、维护跨会话记忆、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你，447 个测试是绿的（445 个跑 + 2 个容器集成测试在 Docker 不可用时自动跳过）。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
 
 代码来自一次公开拆解。公开的源码分析里，Claude Code 这类生产级 agent 暴露出不少关键架构，我挑出最核心的一层，用尽量少的代码诚实地复写了一遍。所以读 CoreCoder，约等于读一份基于公开源码分析的「可运行注释版」：讲的是这类 agent 的核心思路，而它本身只是最小复写，就摆在你机器上，随你拆、随你改。
 
@@ -115,6 +115,14 @@ docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/
 
 Docker 不可用时不会崩，而是**优雅降级**：默认**拒绝**（fail closed），只有在你确认之后，才允许带白名单、超时和 WARNING 审计日志在本机跑命令；无人值守场景用 `CORECODER_ALLOW_LOCAL_EXEC=1` 显式开启。
 
+### Phase 2：纯工具搜索
+
+Agent 靠**搜索**来找代码，而不是靠手工建的索引。Phase 2 加了搜索对，以及两者共用的那道闸：
+
+- **`grep_search`**：`PATH` 上有 `rg` 就走 ripgrep，否则退到纯 Python 扫描（大仓库上约慢 10–50 倍，输出一致）。**`list_files`** 用 glob 找文件。两者都过路径闸、对符号链接安全。
+- **`path_guard`** 是它们前面的唯一闸门：任何工具碰文件系统之前，先堵死穿越出工作区的路径，再堵死符号链接逃逸（macOS `/var` 这类符号链接根目录的坑也处理了）。
+- **`prompts/search_strategy.py`** 教 Agent **怎么**搜——用精准的 grep 收窄，而不是整文件读——让探索在大仓库上也保持廉价。零索引、零向量，整套策略就是纯工具。
+
 ### Phase 3：规划 · 修正 · 路由
 
 Phase 3 把 agent 从「优秀执行者」升级成「聪明决策者」：
@@ -186,55 +194,75 @@ CoreCoder 从「单个聪明的 Agent」升级为「可编排的智能体系统�
 
 ```
 corecoder/
-├── agent.py        agent 主循环 + 并行工具执行       155 行   ← 从这里开始读
-├── llm.py          流式客户端 + 重试 + 成本统计       336 行
-├── context.py      三层上下文压缩                     210 行
-├── session.py      会话存盘 / 续聊 + 路径穿越防护      97 行
-├── prompt.py       系统提示词 + 搜索策略                40 行
-├── prompts/        可复用提示片段                      35 行   ← Phase 2
-├── cli.py          REPL + 斜杠命令 + 一次性模式        270 行
-├── config.py       环境变量配置                        57 行
-├── planner.py      规划引擎（Todo/Plan/Guard）         243 行   ← Phase 3
-├── model_router.py 任务→模型 tier 路由（YAML）          104 行   ← Phase 3
-├── sandbox/        Docker 容器命令隔离                ~1200 行   ← Phase 1
-│   ├── docker_executor.py  加固容器生命周期           440 行
-│   ├── executor.py         后端选择 + 优雅降级        230 行
-│   ├── sync.py             /workspace ↔ 宿主增量同步   160 行
-│   ├── policy.py           权限确认 + 会话缓存         230 行
-│   ├── local_executor.py   降级版宿主白名单执行        160 行
-│   └── logger.py·models.py·locking.py                  90 行
-└── tools/
-    ├── sandbox_tool.py  execute_in_sandbox（取代 bash） 165 行
-    ├── sync_tool.py     sync_workspace（拉回变更）      90 行
-    ├── grep_search.py   rg 优先正则搜索 + Python 兜底    230 行   ← Phase 2
-    ├── list_files.py    glob 找文件（符号链接安全）      90 行    ← Phase 2
-    ├── read_file.py     读取 + 区间 + 300 行上限         140 行
-    ├── path_guard.py    共用路径穿越/符号链接闸         70 行    ← Phase 2
-    ├── todo_tools.py    todo_write / todo_update        128 行   ← Phase 3
-    ├── correction.py    错误→策略自我修正                125 行   ← Phase 3
-    ├── mcp_lite.py      MCP 客户端 + 结构化超时          128 行   ← Phase 3
-    ├── workspace_path.py  /workspace 路径映射           55 行
-    ├── bash.py       预检正则闸（保留作辅助）          127 行
-    ├── edit.py       唯一匹配搜索替换 + diff            92 行
-    ├── grep.py       内容搜索（旧）                     79 行
-    ├── glob_tool.py  文件名匹配（旧）                   47 行
-    ├── write.py      文件写入                           38 行
-    ├── agent.py      子 agent 派生                      58 行
-    ├── base.py       工具基类                           27 行
-    └── memory_tools.py  六个记忆工具                    ~160 行   ← Phase 5
-└── memory/          混合检索记忆系统                    ~700 行   ← Phase 5
-    ├── store.py      双库 SQLite + FTS5 + 向量后端      300 行
-    ├── retriever.py  BM25+向量 RRF 融合                 120 行
-    ├── embedder.py   多后端嵌入 + LRU                   150 行
-    ├── tokenizer.py  jieba→bigram 降级分词               80 行
-    ├── maintenance.py 置信度衰减 + compact + stats       90 行
-    ├── prompt.py     记忆段注入 + token 预算             90 行
-    ├── integration.py 接入 planning_guard / Self-Correction  110 行
-    ├── security.py   敏感信息脱敏                       60 行
-    └── types.py      数据模型                           110 行
+├── agent.py          agent 主循环 + 并行工具执行         172 行   ← 从这里开始读
+├── llm.py            流式客户端 + 重试 + 成本统计         344 行
+├── context.py        三层上下文压缩                       210 行
+├── session.py        会话存盘 / 续聊 + 路径穿越防护        97 行
+├── prompt.py         系统提示词 + 搜索策略                 39 行
+├── prompts/          可复用提示片段                        36 行   ← Phase 2
+├── cli.py            REPL + 斜杠命令 + 一次性模式          306 行
+├── config.py         环境变量配置                          57 行
+├── planner.py        规划引擎（Todo/Plan/Guard）           298 行   ← Phase 3
+├── model_router.py   任务→模型 tier 路由（YAML）            104 行   ← Phase 3
+├── sandbox/          Docker 容器命令隔离                   1568 行  ← Phase 1
+│   ├── docker_executor.py  加固容器生命周期                495 行
+│   ├── executor.py         后端选择 + 优雅降级             229 行
+│   ├── sync.py             /workspace ↔ 宿主增量同步        255 行
+│   ├── policy.py           权限确认 + 会话缓存              284 行
+│   ├── local_executor.py   降级版宿主白名单执行             160 行
+│   └── models·logger·locking·__init__                      145 行
+├── mcp/              MCP 客户端（stdio/SSE/Streamable）     1623 行  ← Phase 3.5/4
+│   ├── client.py     传输层 + 重试                           92 行
+│   ├── registry.py   服务器加载 + 工具注册                  166 行
+│   ├── adapter.py    MCP 工具适配                           131 行
+│   ├── security.py   按 Server 白名单 + 参数正则              44 行
+│   ├── lsp_metadata.py · lsp_compressor.py  LSP 符号智能      225 行  ← Phase 4
+│   └── config·errors·observability·runtime·__init__          203 行
+├── agents/           多 Agent 编排                          819 行  ← Phase 4
+│   ├── orchestrator.py  串/并/条件策略 + 熔断                306 行
+│   ├── runner.py        子 agent 执行器                     272 行
+│   ├── definition.py    SubagentDefinition                    78 行
+│   ├── blackboard.py    共享 KV + TTL                         60 行
+│   └── tool_validator.py 子 agent 工具校验                    87 行
+├── contracts/        RFC 信封 + Pydantic 校验               609 行  ← Phase 4
+│   ├── subagent_result.py  信封 + 状态组合矩阵               321 行
+│   └── envelope.py · prompts.py                             288 行
+├── eval/             评测体系（metrics·runner·kb·dashboard）  226 行  ← Phase 4
+├── memory/           混合检索记忆系统                       1588 行  ← Phase 5
+│   ├── store.py      双库 SQLite + FTS5 + 向量后端           619 行
+│   ├── embedder.py   多后端嵌入 + LRU                        198 行
+│   ├── retriever.py  BM25+向量 RRF 融合                      103 行
+│   ├── maintenance.py 置信度衰减 + compact + stats           113 行
+│   ├── integration.py 接入 planning_guard / Self-Correction  130 行
+│   ├── types.py      数据模型                                129 行
+│   ├── tokenizer.py  jieba→bigram 降级分词                     75 行
+│   ├── prompt.py     记忆段注入 + token 预算                   74 行
+│   └── config·security·__init__                              147 行
+└── tools/            二十个工具                              2299 行
+    ├── sandbox_tool.py  execute_in_sandbox（取代 bash）       184 行
+    ├── sync_tool.py     sync_workspace（拉回变更）             76 行
+    ├── grep_search.py   rg 优先正则搜索 + Python 兜底          232 行  ← Phase 2
+    ├── list_files.py    glob 找文件（符号链接安全）             96 行  ← Phase 2
+    ├── path_guard.py    共用路径穿越/符号链接闸                78 行  ← Phase 2
+    ├── read_file.py     读取 + 区间 + 300 行上限               127 行
+    ├── todo_tools.py    todo_write / todo_update              144 行  ← Phase 3
+    ├── correction.py    错误→策略自我修正                      169 行  ← Phase 3
+    ├── mcp_lite.py      MCP 原型客户端                         121 行  ← Phase 3
+    ├── subagent_tools.py spawn_subagent                        83 行  ← Phase 4
+    ├── memory_tools.py  六个记忆工具                           199 行  ← Phase 5
+    ├── fetch.py         fetch_url                              40 行
+    ├── workspace_path.py  /workspace 路径映射                   57 行
+    ├── bash.py          预检正则闸（保留作辅助）                127 行
+    ├── edit.py          唯一匹配搜索替换 + diff                 92 行
+    ├── grep.py          内容搜索（旧）                          84 行
+    ├── glob_tool.py     文件名匹配（旧）                        52 行
+    ├── batch_diagnostics.py  沙箱诊断辅助                      41 行
+    ├── write.py         文件写入                               45 行
+    ├── agent.py         子 agent 派生                         162 行
+    └── base.py          工具基类                               27 行
 ```
 
-（容器镜像本身由仓库根目录的 `sandbox/Dockerfile` 构建。）十九个工具：`execute_in_sandbox`（`bash` 的沙箱版继任者）、`sync_workspace`（拉回沙箱变更）、`grep_search` 与 `list_files`（Phase 2 纯工具驱动搜索对：零索引、零向量、路径受控、rg 优先 + 纯 Python 兜底）、`todo_write` 与 `todo_update`（Phase 3 规划对）、`read_file`、`write_file`、`edit_file`、`glob`、`grep`、`agent`（派子 agent）、`fetch_url`、以及 Phase 5 的 `memory_save` / `memory_search` / `memory_list` / `memory_forget` / `memory_confirm` / `memory_stats`。搜索策略在 `prompts/search_strategy.py`；模型路由规则在 `config/model_routing.yaml`；记忆配置在 `config/memory.yaml`。其余都是包在引擎核心外面的 CLI 外壳、配置和打包。
+（容器镜像本身由仓库根目录的 `sandbox/Dockerfile` 构建。）二十个工具：`execute_in_sandbox`（`bash` 的沙箱版继任者）、`sync_workspace`（拉回沙箱变更）、`grep_search` 与 `list_files`（Phase 2 纯工具驱动搜索对：零索引、零向量、路径受控、rg 优先 + 纯 Python 兜底）、`todo_write` 与 `todo_update`（Phase 3 规划对）、`spawn_subagent`（Phase 4）、Phase 5 的 `memory_save` / `memory_search` / `memory_list` / `memory_forget` / `memory_confirm` / `memory_stats`、以及 Phase 1/2 的文件类工具 `read_file`、`write_file`、`edit_file`、`glob`、`grep`、`fetch_url`、`agent`（派子 agent）。搜索策略在 `prompts/search_strategy.py`；模型路由规则在 `config/model_routing.yaml`；MCP Server 在 `config/mcp_servers.yaml`（全部默认关闭）；记忆配置在 `config/memory.yaml`。其余都是包在引擎核心外面的 CLI 外壳、配置和打包。
 
 ## 一个 while 循环就是 agent 的本体
 
@@ -255,7 +283,7 @@ def chat(self, user_input):
     return "(已达轮次上限)"
 ```
 
-就这么点。这个循环的核心骨架就二十来行，把并行执行和被 Ctrl+C 打断后的回填都算上，也才四十多行。CoreCoder 一千多行里剩下的，几乎全在收拾它真跑起来之后冒出来的岔子。`llm.py` 最后成了全项目最大的文件，不是因为调模型有多难，而是流式返回里一个工具调用的参数会被切成好几段先后送到、得按顺序拼回去，provider 偶尔吐半截 JSON 或把 usage 填成 null，限流（429）、超时、连接中断和 5xx 都得退避重试，其余 4xx 该直接抛就别硬试。这些不起眼的脏活，而不是那个循环，才是一个 agent 从能演示走到能交付真正吃工程功夫的地方；第三篇文章顺着它拆到每一行。
+就这么点。这个循环的核心骨架就二十来行，把并行执行和被 Ctrl+C 打断后的回填都算上，也才四十多行。CoreCoder 约一万行里剩下的，几乎全在收拾它真跑起来之后冒出来的岔子。`llm.py`——现在 344 行，引擎里最大的文件之一——长成这样不是因为调模型有多难，而是流式返回里一个工具调用的参数会被切成好几段先后送到、得按顺序拼回去，provider 偶尔吐半截 JSON 或把 usage 填成 null，限流（429）、超时、连接中断和 5xx 都得退避重试，其余 4xx 该直接抛就别硬试。这些不起眼的脏活，而不是那个循环，才是一个 agent 从能演示走到能交付真正吃工程功夫的地方；第三篇文章顺着它拆到每一行。
 
 有三个决定值得单独看，因为它们是「先读懂别人怎么做」之后才做得出的取舍，也是你 fork 自己 agent 时可以直接抄走的判断。
 
@@ -284,9 +312,9 @@ def chat(self, user_input):
 
 读懂之后，最自然的下一步就是 fork。起手不用伤筋动骨：
 
-- **换个你常用的模型。** 就是上面那两个环境变量，`llm.py`（336 行）是所有 provider 适配的入口。
+- **换个你常用的模型。** 就是上面那两个环境变量，`llm.py`（344 行）是所有 provider 适配的入口。
 - **加一件你自己的工具。** 照 `tools/base.py`（27 行）的工具基类写个新文件，跑测试、抓网页、调 LSP 都行，第二篇文章末尾手把手带你写第一个。
-- **改系统提示词。** `prompt.py` 才 33 行，改一句就能看到 agent 的脾气变了，是门槛最低的「改一处就有反馈」。
+- **改系统提示词。** `prompt.py` 才 39 行，改一句就能看到 agent 的脾气变了，是门槛最低的「改一处就有反馈」。
 - **直接当库 import。** 顶层导出了 `Agent`、`LLM`、`Config`，能嵌进你自己的程序：
 
 ```python
@@ -300,8 +328,9 @@ print(Agent(llm=llm).chat("找出项目里所有 TODO 注释并列出来"))
 
 - **沙箱只隔离了 shell，没隔离整个 agent。** `execute_in_sandbox` 在加固容器里跑命令（无网络、只读根文件系统、丢光 capability、限制拉满），但 `edit_file` / `write_file` 的文件改动仍然落在宿主上，沙箱工作区只以 diff 形式暴露、不会写回仓库。下一步自然是让文件工具也进沙箱，或在退出时把工作区同步回宿主。
 - **重试只做了指数退避。** 没有 fallback 模型，也没有美元硬预算。顺着 `llm.py` 往下，加一条 fallback 模型链和超预算自动停的闸，改动基本就集中在这一个文件。
-- **子 agent 只有最朴素的同步执行。** 做成异步或流式执行器，正好补上第五篇点名的、相对生产级 agent 流式执行的那段差距。
-- **不做 MCP，不做 RAG。** 接上 MCP 让它用上外部工具生态，或给大仓加检索式的代码定位，都是从「最小核心」往「你自己的更强 agent」扩的真实方向。
+- **子 agent 可编排，但仍未流式。** Phase 4 加了异步 `Orchestrator` 和校验信封，但主 agent 的 `spawn_subagent` 依旧是同步执行、输出截断。做成流式/异步执行器——主 agent 继续干活，子 agent 一边跑一边回流——正好补上第五篇点名的、相对生产级 agent 流式执行的那段差距。
+- **记忆是轻量本地检索，不是完整 RAG 索引。** Phase 5 的混合搜索是 SQLite FTS5 + numpy 向量做 RRF——做跨会话笔记绰绰有余，但不是大仓的分块嵌入索引。接外部向量库或做大仓代码分块，是自然的下一步。
+- **MCP 是客户端，不是市场。** Phase 3.5/4 给了它一个真 MCP 客户端（stdio/SSE/Streamable HTTP）和 LSP 智能，但 Server 仍靠手写配置。自动发现 Server，或把自己的一套工具打包成 MCP Server 供别的 agent 调用，都是空着的方向。
 
 README 只给方向，每条的代码细节第七篇接着讲。挑一个动手，就是把它做得更好的开始。
 
@@ -332,7 +361,7 @@ quit / exit      退出（Ctrl+C 取消当前回合）
 
 ## 贡献 / License
 
-动手之前先跑一遍 `pytest tests/ -q`（400 个测试）、`ruff check` 和 `compileall`，绿了再提。Docker 沙箱测试需要先构建一次镜像：`docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`。MIT License，欢迎 fork 拿去造更好的东西，能在 README 里留一句出处就更好。
+动手之前先跑一遍 `pytest tests/ -q`（447 个测试：445 个跑 + 2 个 Docker 门槛跳过）、`ruff check` 和 `compileall`，绿了再提。Docker 沙箱测试需要先构建一次镜像：`docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`。MIT License，欢迎 fork 拿去造更好的东西，能在 README 里留一句出处就更好。
 
 ---
 
