@@ -17,3 +17,6 @@ venv/
 .tmp/
 # Phase 5 runtime state: project-level memory db + plan store live here
 .corecoder/
+# eval_bench runtime artifacts
+results/
+eval_bench/workspace/

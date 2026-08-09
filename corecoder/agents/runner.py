@@ -19,6 +19,7 @@ from ..contracts.envelope import (
     SubagentResultEnvelope,
     parse_envelope,
 )
+from ..observability.budget import TokenBudgetExceeded, TokenBudgetGuard
 from .definition import SubagentDefinition
 from .tool_validator import ToolOutputValidator
 
@@ -33,6 +34,7 @@ class SubagentRunner:
         instance_id: Optional[str] = None,
         executor: Optional[Callable[[str, str], Any]] = None,
         tool_validator: Optional[ToolOutputValidator] = None,
+        budget_guard: Optional[TokenBudgetGuard] = None,
     ) -> None:
         self.definition = definition
         self.task = task
@@ -44,6 +46,12 @@ class SubagentRunner:
         self._executor = executor
         # P0-1: tool-output contract validation (subagent's inner tool calls)
         self.tool_validator = tool_validator or ToolOutputValidator()
+        # Token-budget enforcement (optional; None = no-op, backward compatible).
+        self._budget_guard = budget_guard
+        self._session_id = (
+            (parent_context or {}).get("session_id")
+            or (parent_context or {}).get("task_id", "unknown")
+        )
         self._start_time: Optional[float] = None
 
     async def run(self) -> SubagentResultEnvelope:
@@ -60,6 +68,16 @@ class SubagentRunner:
                     category="system_constraint",
                     retryable=False,
                     message=f"Subagent 执行超时（{self.definition.timeout_seconds}s）",
+                ),
+            )
+        except TokenBudgetExceeded as exc:
+            return self._build_error_envelope(
+                "failed",
+                ErrorObject(
+                    code="TOKEN_BUDGET_EXCEEDED",
+                    category="system_constraint",
+                    retryable=False,
+                    message=str(exc),
                 ),
             )
         except asyncio.CancelledError:
@@ -85,7 +103,14 @@ class SubagentRunner:
 
     # -------------------------------------------------------------- internals
 
+    def _check_budget(self) -> None:
+        """Raise TokenBudgetExceeded before an LLM call when the session budget
+        is exhausted (optional guard; no-op when not injected)."""
+        if self._budget_guard is not None:
+            self._budget_guard.check_and_enforce(self._session_id)
+
     async def _run_loop(self) -> dict:
+        self._check_budget()
         system_prompt = self._build_system_prompt()
         if self._executor is not None:
             return await self._executor(self.task, system_prompt)
@@ -115,6 +140,7 @@ class SubagentRunner:
         call converts the draft into the envelope (ADR-001: semantics are then
         Pydantic-validated downstream).
         """
+        self._check_budget()
         from ..contracts import parse_result
 
         try:
@@ -176,6 +202,7 @@ class SubagentRunner:
             # a subagent that omitted them still produces a valid envelope
             meta = result_data.setdefault("meta", {})
             meta["task_id"] = self.parent_context.get("task_id", "unknown")
+            meta["session_id"] = self.parent_context.get("session_id")
             meta["subagent_instance_id"] = self.instance_id
             if self._start_time is not None:
                 now = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -216,6 +243,7 @@ class SubagentRunner:
             task_id=self.parent_context.get("task_id", "unknown"),
             subagent_name=self.definition.name,
             subagent_instance_id=self.instance_id,
+            session_id=self.parent_context.get("session_id"),
             started_at=now,
             finished_at=now,
             duration_ms=int((time.monotonic() - self._start_time) * 1000)

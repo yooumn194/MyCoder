@@ -14,8 +14,10 @@ from enum import Enum
 from typing import Optional
 
 from ..contracts.envelope import ErrorObject, Meta, SubagentResultEnvelope
+from ..observability.budget import TokenBudgetExceeded, TokenBudgetGuard
 from .blackboard import Blackboard
 from .definition import BUILTIN_SUBAGENTS
+from .planner import TaskPlanner
 from .runner import SubagentRunner
 
 CIRCUIT_BREAKER_THRESHOLD = 3
@@ -50,12 +52,20 @@ class Orchestrator:
         model_router=None,
         llm=None,
         tools=None,
+        planner: TaskPlanner | None = None,
+        budget_guard: TokenBudgetGuard | None = None,
     ) -> None:
         self.blackboard = blackboard
         self.plan_store = plan_store
         self.model_router = model_router
         self.llm = llm
         self.tools = tools or []
+        # Phase 6: LLM-driven task decomposition. When None, _decompose keeps the
+        # original hardcoded single-explorer fallback (backward compatible).
+        self._planner = planner
+        # Token-budget enforcement (optional; None = no-op, backward compatible).
+        self._budget_guard = budget_guard
+        self._budget_blown = False
         self._circuit_breaker: dict[str, int] = {}
         # when a subagent tripped the breaker (monotonic timestamp) — for the
         # half-open probe after the cooldown
@@ -92,6 +102,7 @@ class Orchestrator:
             parent_context=parent_context,
             instance_id=str(uuid.uuid4()),
             executor=executor,
+            budget_guard=self._budget_guard,
         )
         if not blocking:
             asyncio.create_task(runner.run())
@@ -120,20 +131,47 @@ class Orchestrator:
         start_time = time.monotonic()
         parent_context = parent_context or {"task_id": str(uuid.uuid4())}
 
-        assignments = self._decompose(task, parent_context, subtasks)
+        assignments = await self._decompose(task, parent_context, subtasks)
         results = await self._execute(assignments, strategy, parent_context)
         return self._synthesize(results, start_time, parent_context)
 
     # ------------------------------------------------------------- internals
 
-    def _decompose(self, task: str, parent_context: dict, subtasks: Optional[list[dict]]) -> list[dict]:
+    async def _decompose(
+        self, task: str, parent_context: dict, subtasks: Optional[list[dict]] = None
+    ) -> list[dict]:
         """Turn the task into subagent assignments.
 
-        Subtasks may be provided explicitly (tests / planner output); otherwise
-        a single default explorer assignment is made.
+        Explicit subtasks are passed through untouched (backward compatible).
+        With a TaskPlanner injected, the task is decomposed into a dependency
+        DAG by the LLM; the plan is also published to the shared blackboard
+        (key `{task_id}:plan`) so subagents can read the whole plan. Without a
+        planner, the original single-explorer default is kept.
         """
         if subtasks:
             return subtasks
+        if self._planner is not None:
+            try:
+                plan = await self._planner.decompose(task, parent_context)
+                assignments = [
+                    {
+                        "subagent_name": st.subagent_name,
+                        "task": st.instruction,
+                        "id": st.id,
+                        "depends_on": st.depends_on,
+                        "estimated_tokens": st.estimated_tokens,
+                    }
+                    for st in plan
+                ]
+                task_id = (parent_context or {}).get("task_id")
+                if task_id and self.blackboard is not None:
+                    try:
+                        await self.blackboard.put(task_id, "plan", assignments)
+                    except Exception:  # noqa: BLE001 - plan publish is best-effort
+                        pass
+                return assignments
+            except Exception:  # noqa: BLE001 - planner never raises, but be safe
+                return [{"subagent_name": "explorer", "task": task}]
         return [{"subagent_name": "explorer", "task": task}]
 
     async def _execute(
@@ -149,6 +187,8 @@ class Orchestrator:
             if self._is_open(name):
                 results[name] = self._build_circuit_break_envelope(name)
                 continue
+            if self._budget_blown:
+                continue
             filtered.append(assign)
 
         if strategy == OrchestrationStrategy.PARALLEL:
@@ -162,6 +202,8 @@ class Orchestrator:
     ) -> dict[str, SubagentResultEnvelope]:
         for assign in assignments:
             name = assign["subagent_name"]
+            if self._budget_blown:
+                break
             envelope = await self._run_one(assign, parent_context)
             results[name] = envelope
             self._record_status(name, envelope)
@@ -197,8 +239,10 @@ class Orchestrator:
     ) -> dict[str, SubagentResultEnvelope]:
         for i, assign in enumerate(assignments):
             name = assign["subagent_name"]
-            # if a previous assignment failed, stop the chain
-            if any(r.status in ("failed", "cancelled") for r in results.values()):
+            # if a previous assignment failed or the budget tripped, stop the chain
+            if self._budget_blown or any(
+                r.status in ("failed", "cancelled") for r in results.values()
+            ):
                 break
             envelope = await self._run_one(assign, parent_context)
             results[name] = envelope
@@ -225,6 +269,7 @@ class Orchestrator:
             parent_context=parent_context,
             instance_id=str(uuid.uuid4()),
             executor=assign.get("executor"),
+            budget_guard=self._budget_guard,
         )
         return await runner.run()
 
@@ -252,6 +297,21 @@ class Orchestrator:
             self._circuit_breaker[name] = self._circuit_breaker.get(name, 0) + 1
             if self._circuit_breaker[name] >= CIRCUIT_BREAKER_THRESHOLD:
                 self._circuit_open_since[name] = time.monotonic()
+        # Token budget: checked after every subtask; a trip flips _budget_blown
+        # so the sequential/conditional loops stop scheduling further work.
+        if self._budget_guard is not None:
+            session_id = self._session_id_of(envelope)
+            try:
+                self._budget_guard.check_and_enforce(session_id)
+            except TokenBudgetExceeded:
+                self._budget_blown = True
+
+    @staticmethod
+    def _session_id_of(envelope: SubagentResultEnvelope) -> str:
+        meta = getattr(envelope, "meta", None)
+        if meta is not None:
+            return getattr(meta, "session_id", None) or getattr(meta, "task_id", "unknown")
+        return "unknown"
 
     def _build_circuit_break_envelope(self, name: str) -> SubagentResultEnvelope:
         return SubagentResultEnvelope(
@@ -284,6 +344,7 @@ class Orchestrator:
             task_id=parent_context.get("task_id", "unknown"),
             subagent_name=name,
             subagent_instance_id=str(uuid.uuid4()),
+            session_id=parent_context.get("session_id"),
             started_at=now,
             finished_at=now,
             duration_ms=0,

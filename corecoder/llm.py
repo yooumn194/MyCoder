@@ -9,11 +9,14 @@ etc.), use the LiteLLM backend which routes to 100+ providers through a
 single unified interface. Set CORECODER_PROVIDER=litellm.
 """
 
+import functools
 import json
 import time
 from dataclasses import dataclass, field
 
 from openai import OpenAI, APIError, BadRequestError, RateLimitError, APITimeoutError, APIConnectionError
+
+from .observability.trace import LLMTracer, estimate_tokens
 
 
 @dataclass
@@ -81,12 +84,73 @@ _PRICING = {
 }
 
 
+def _messages_text(messages: list) -> str:
+    """Flatten an OpenAI messages list into plain text for token estimation."""
+    parts = []
+    for m in messages or []:
+        if isinstance(m, dict):
+            content = m.get("content")
+            if content:
+                parts.append(str(content))
+    return "\n".join(parts)
+
+
+def _context_value(name: str):
+    """Read a structlog contextvar (e.g. session_id) if one is bound."""
+    try:
+        from structlog.contextvars import get_contextvars
+
+        return get_contextvars().get(name)
+    except Exception:  # noqa: BLE001 - contextvars are best-effort
+        return None
+
+
+def _traced(method):
+    """Wrap LLM.chat / LiteLLM.chat with an optional LLMTracer.
+
+    Zero-cost when the instance has no tracer (`_tracer` is None). Token usage
+    is read from the returned LLMResponse; when the provider omitted usage, it
+    is estimated via tiktoken (optional) and recorded as -1 if tiktoken is
+    missing. Exceptions are recorded (error/timeout) and re-raised.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        tracer = getattr(self, "_tracer", None)
+        if tracer is None:
+            return method(self, *args, **kwargs)
+        messages = args[0] if args else kwargs.get("messages", [])
+        session_id = _context_value("session_id") or "unknown"
+        caller = getattr(self, "caller", None) or "llm"
+        with tracer.trace(
+            session_id=session_id,
+            caller=caller,
+            model=getattr(self, "model", "unknown"),
+        ) as ctx:
+            resp = method(self, *args, **kwargs)
+            prompt = int(getattr(resp, "prompt_tokens", 0) or 0)
+            completion = int(getattr(resp, "completion_tokens", 0) or 0)
+            if prompt == 0 and completion == 0:
+                prompt_est = estimate_tokens(_messages_text(messages))
+                completion_est = estimate_tokens(getattr(resp, "content", "") or "")
+                prompt = prompt_est if prompt_est is not None else -1
+                completion = completion_est if completion_est is not None else -1
+            ctx["prompt_tokens"] = prompt
+            ctx["completion_tokens"] = completion
+        return resp
+
+    return wrapper
+
+
 class LLM:
     def __init__(
         self,
         model: str,
         api_key: str,
         base_url: str | None = None,
+        *,
+        tracer: LLMTracer | None = None,
+        caller: str = "llm",
         **kwargs,
     ):
         self.model = model
@@ -94,6 +158,9 @@ class LLM:
         self.extra = kwargs  # temperature, max_tokens, etc.
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
+        # Observability: optional call tracer; None = no tracing (backward compat).
+        self._tracer = tracer
+        self.caller = caller
 
     @property
     def estimated_cost(self) -> float | None:
@@ -107,6 +174,7 @@ class LLM:
             + self.total_completion_tokens * output_rate / 1_000_000
         )
 
+    @_traced
     def chat(
         self,
         messages: list[dict],
@@ -235,6 +303,9 @@ class LiteLLM(LLM):
         model: str,
         api_key: str | None = None,
         base_url: str | None = None,
+        *,
+        tracer: LLMTracer | None = None,
+        caller: str = "llm",
         **kwargs,
     ):
         # skip LLM.__init__ which creates an OpenAI client
@@ -244,7 +315,11 @@ class LiteLLM(LLM):
         self.extra = kwargs
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
+        # Observability: optional call tracer; None = no tracing (backward compat).
+        self._tracer = tracer
+        self.caller = caller
 
+    @_traced
     def chat(
         self,
         messages: list[dict],

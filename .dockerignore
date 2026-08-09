@@ -1,0 +1,17 @@
+# Keep the api image lean: no tests, docs, VCS or runtime artifacts.
+tests/
+docs/
+article/
+assets/
+.git/
+.gitignore
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+.env
+*.db
+.corecoder/
+hello.go

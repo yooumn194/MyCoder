@@ -1,0 +1,489 @@
+[
+  {
+    "id": "bugfix-001",
+    "category": "bugfix",
+    "difficulty": "easy",
+    "prompt": "Fix the bug in `buggy.py`: `parse_int` must return None for a None input instead of raising TypeError. Valid string inputs must still parse. Edit the file in place.",
+    "context_files": {
+      "buggy.py": "def parse_int(value):\n    \"\"\"Return value as an int, or None when it cannot be parsed.\"\"\"\n    return int(value)\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from buggy import parse_int\n\ndef test_parse_int_valid():\n    assert parse_int(\"42\") == 42\n    assert parse_int(\"-7\") == -7\n\ndef test_parse_int_none():\n    assert parse_int(None) is None\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 120,
+    "max_tokens": 8000
+  },
+  {
+    "id": "bugfix-002",
+    "category": "bugfix",
+    "difficulty": "easy",
+    "prompt": "Fix the bug in `buggy.py`: `sum_list` currently skips the first element (its loop starts at index 1). Make it sum every element. Edit the file in place.",
+    "context_files": {
+      "buggy.py": "def sum_list(items):\n    \"\"\"Return the sum of all numbers in items.\"\"\"\n    total = 0\n    for i in range(1, len(items)):\n        total += items[i]\n    return total\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from buggy import sum_list\n\ndef test_sum_list():\n    assert sum_list([]) == 0\n    assert sum_list([1, 2, 3]) == 6\n    assert sum_list([-1, 1]) == 0\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 120,
+    "max_tokens": 8000
+  },
+  {
+    "id": "bugfix-003",
+    "category": "bugfix",
+    "difficulty": "easy",
+    "prompt": "Fix the bug in `buggy.py`: `is_palindrome` always returns True. Make it actually compare the string to its reverse. Edit the file in place.",
+    "context_files": {
+      "buggy.py": "def is_palindrome(s):\n    \"\"\"Return True when s reads the same forwards and backwards.\"\"\"\n    return s == s\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from buggy import is_palindrome\n\ndef test_is_palindrome():\n    assert is_palindrome(\"abba\") is True\n    assert is_palindrome(\"racecar\") is True\n    assert is_palindrome(\"ab\") is False\n    assert is_palindrome(\"\") is True\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 120,
+    "max_tokens": 8000
+  },
+  {
+    "id": "bugfix-004",
+    "category": "bugfix",
+    "difficulty": "easy",
+    "prompt": "Fix the bug in `buggy.py`: `get_value` returns None even when the key exists. It must return `mapping[key]` when present, else the default. Edit the file in place.",
+    "context_files": {
+      "buggy.py": "def get_value(mapping, key, default=None):\n    \"\"\"Return mapping[key] when present, else default.\"\"\"\n    if key in mapping:\n        return None\n    return default\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from buggy import get_value\n\ndef test_get_value():\n    assert get_value({\"a\": 1}, \"a\") == 1\n    assert get_value({}, \"x\", 9) == 9\n    assert get_value({\"a\": 1}, \"b\") is None\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 120,
+    "max_tokens": 8000
+  },
+  {
+    "id": "bugfix-005",
+    "category": "bugfix",
+    "difficulty": "easy",
+    "prompt": "Fix the bug in `buggy.py`: `reverse_string` returns the input unchanged. Make it return the reversed string. Edit the file in place.",
+    "context_files": {
+      "buggy.py": "def reverse_string(s):\n    \"\"\"Return s reversed.\"\"\"\n    return s\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from buggy import reverse_string\n\ndef test_reverse_string():\n    assert reverse_string(\"abc\") == \"cba\"\n    assert reverse_string(\"\") == \"\"\n    assert reverse_string(\"a\") == \"a\"\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 120,
+    "max_tokens": 8000
+  },
+  {
+    "id": "bugfix-006",
+    "category": "bugfix",
+    "difficulty": "medium",
+    "prompt": "Fix the bug in `buggy.py`: `deep_flatten` only flattens one level. Make it flatten arbitrarily nested lists (including nested lists inside nested lists) into a single flat list. Edit the file in place.",
+    "context_files": {
+      "buggy.py": "def deep_flatten(items):\n    \"\"\"Flatten arbitrarily nested lists into a single flat list.\"\"\"\n    result = []\n    for item in items:\n        if isinstance(item, list):\n            result.extend(item)\n        else:\n            result.append(item)\n    return result\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from buggy import deep_flatten\n\ndef test_deep_flatten():\n    assert deep_flatten([1, [2, [3, 4]], 5]) == [1, 2, 3, 4, 5]\n    assert deep_flatten([[], []]) == []\n    assert deep_flatten([\"a\", [\"b\", [\"c\"]]]) == [\"a\", \"b\", \"c\"]\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 120,
+    "max_tokens": 8000
+  },
+  {
+    "id": "bugfix-007",
+    "category": "bugfix",
+    "difficulty": "medium",
+    "prompt": "Fix the bug in `buggy.py`: `fibonacci(0)` must return 0, but the base case returns 1. Correct the base cases so fibonacci(0)=0 and fibonacci(1)=1. Edit the file in place.",
+    "context_files": {
+      "buggy.py": "def fibonacci(n):\n    \"\"\"Return the n-th Fibonacci number (fibonacci(0) == 0).\"\"\"\n    if n <= 1:\n        return 1\n    return fibonacci(n - 1) + fibonacci(n - 2)\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from buggy import fibonacci\n\ndef test_fibonacci():\n    assert fibonacci(0) == 0\n    assert fibonacci(1) == 1\n    assert fibonacci(2) == 1\n    assert fibonacci(10) == 55\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 120,
+    "max_tokens": 8000
+  },
+  {
+    "id": "bugfix-008",
+    "category": "bugfix",
+    "difficulty": "medium",
+    "prompt": "Fix the bug in `buggy.py`: `unique_preserve_order` uses set() which destroys the input order. Make it return unique items while preserving the order of first appearance. Edit the file in place.",
+    "context_files": {
+      "buggy.py": "def unique_preserve_order(items):\n    \"\"\"Return unique items, keeping the order of first appearance.\"\"\"\n    return list(set(items))\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from buggy import unique_preserve_order\n\ndef test_unique_preserve_order():\n    assert unique_preserve_order([3, 1, 3, 2, 1]) == [3, 1, 2]\n    assert unique_preserve_order([]) == []\n    assert unique_preserve_order([\"b\", \"a\", \"b\"]) == [\"b\", \"a\"]\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 120,
+    "max_tokens": 8000
+  },
+  {
+    "id": "bugfix-009",
+    "category": "bugfix",
+    "difficulty": "medium",
+    "prompt": "Fix the bug in `buggy.py`: `to_snake_case` only lowercases and replaces spaces, so camelCase input like 'helloWorld' is not split. Convert camelCase / space-separated names to snake_case (insert an underscore before each capital letter and lowercase everything). Edit the file in place.",
+    "context_files": {
+      "buggy.py": "def to_snake_case(name):\n    \"\"\"Convert a camelCase / space-separated name to snake_case.\"\"\"\n    return name.replace(\" \", \"_\").lower()\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from buggy import to_snake_case\n\ndef test_to_snake_case():\n    assert to_snake_case(\"helloWorld\") == \"hello_world\"\n    assert to_snake_case(\"User ID\") == \"user_id\"\n    assert to_snake_case(\"HTTPServer\") == \"http_server\"\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 120,
+    "max_tokens": 8000
+  },
+  {
+    "id": "bugfix-010",
+    "category": "bugfix",
+    "difficulty": "hard",
+    "prompt": "Implement the missing logic in `buggy.py`: `merge_intervals` currently just sorts. Implement interval merging so overlapping intervals collapse into one (e.g. [[1,3],[2,6]] -> [[1,6]]). Edit the file in place.",
+    "context_files": {
+      "buggy.py": "def merge_intervals(intervals):\n    \"\"\"Merge overlapping intervals into the minimal set of disjoint ones.\n\n    intervals is a list of [start, end] pairs (inclusive). Returns the merged\n    list sorted by start.\n    \"\"\"\n    return sorted(intervals)\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from buggy import merge_intervals\n\ndef test_merge_intervals():\n    assert merge_intervals([[1, 3], [2, 6], [8, 10], [15, 18]]) == [[1, 6], [8, 10], [15, 18]]\n    assert merge_intervals([[1, 4], [4, 5]]) == [[1, 5]]\n    assert merge_intervals([[1, 2]]) == [[1, 2]]\n    assert merge_intervals([]) == []\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 180,
+    "max_tokens": 8000
+  },
+  {
+    "id": "refactor-001",
+    "category": "refactor",
+    "difficulty": "easy",
+    "prompt": "Refactor `original.py`: replace the if/elif chain in `calculate` with a dispatch table (a dict mapping operator names to functions). Behavior must stay identical. Edit the file in place.",
+    "context_files": {
+      "original.py": "def calculate(op, a, b):\n    \"\"\"Apply op to a and b: add / subtract / multiply / divide.\"\"\"\n    if op == \"add\":\n        return a + b\n    if op == \"subtract\":\n        return a - b\n    if op == \"multiply\":\n        return a * b\n    if op == \"divide\":\n        return a / b\n    raise ValueError(f\"unknown op: {op}\")\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from original import calculate\n\ndef test_calculate():\n    assert calculate(\"add\", 2, 3) == 5\n    assert calculate(\"subtract\", 5, 2) == 3\n    assert calculate(\"multiply\", 4, 3) == 12\n    assert calculate(\"divide\", 10, 2) == 5.0\n    try:\n        calculate(\"mod\", 1, 2)\n        assert False, \"should raise\"\n    except ValueError:\n        pass\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 120,
+    "max_tokens": 8000
+  },
+  {
+    "id": "refactor-002",
+    "category": "refactor",
+    "difficulty": "easy",
+    "prompt": "Refactor `original.py`: `process_data` has two loops where one would do. Clean it up (e.g. one comprehension + a sum) while keeping the exact same behavior. Edit the file in place.",
+    "context_files": {
+      "original.py": "def process_data(rows):\n    \"\"\"Return the total length of all non-empty stripped rows.\"\"\"\n    cleaned = []\n    for r in rows:\n        if r is not None:\n            cleaned.append(r.strip())\n    totals = 0\n    for r in cleaned:\n        totals += len(r)\n    return totals\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from original import process_data\n\ndef test_process_data():\n    # [\"a\", \"bb\"] -> 1 + 2\n    assert process_data([\" a \", None, \"bb\"]) == 3\n    assert process_data([]) == 0\n    assert process_data([\"x\", \" y \"]) == 2\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 120,
+    "max_tokens": 8000
+  },
+  {
+    "id": "refactor-003",
+    "category": "refactor",
+    "difficulty": "medium",
+    "prompt": "Refactor `original.py`: `user_info` builds a dict field by field. Rewrite it more concisely (dict literal or dataclass) with identical behavior. Edit the file in place.",
+    "context_files": {
+      "original.py": "def user_info(name, age, email):\n    \"\"\"Return a dict describing the user.\"\"\"\n    info = {}\n    info[\"name\"] = name\n    info[\"age\"] = age\n    info[\"email\"] = email\n    return info\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from original import user_info\n\ndef test_user_info():\n    assert user_info(\"Ada\", 36, \"ada@example.com\") == {\n        \"name\": \"Ada\", \"age\": 36, \"email\": \"ada@example.com\",\n    }\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 120,
+    "max_tokens": 8000
+  },
+  {
+    "id": "refactor-004",
+    "category": "refactor",
+    "difficulty": "medium",
+    "prompt": "Refactor `original.py`: `classify` has deeply nested conditionals. Rewrite with early-return guard clauses, keeping the exact same behavior. Edit the file in place.",
+    "context_files": {
+      "original.py": "def classify(number):\n    \"\"\"Classify a number into a category string.\"\"\"\n    if number is not None:\n        if number > 0:\n            if number % 2 == 0:\n                return \"positive-even\"\n            return \"positive-odd\"\n        if number < 0:\n            return \"negative\"\n        return \"zero\"\n    return \"none\"\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from original import classify\n\ndef test_classify():\n    assert classify(4) == \"positive-even\"\n    assert classify(3) == \"positive-odd\"\n    assert classify(-2) == \"negative\"\n    assert classify(0) == \"zero\"\n    assert classify(None) == \"none\"\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 120,
+    "max_tokens": 8000
+  },
+  {
+    "id": "refactor-005",
+    "category": "refactor",
+    "difficulty": "medium",
+    "prompt": "Refactor `original.py`: `parse_config` uses magic indices. Use tuple unpacking / clearer parsing while keeping identical behavior. Edit the file in place.",
+    "context_files": {
+      "original.py": "def parse_config(line):\n    \"\"\"Parse 'name,host,port' into a config dict.\"\"\"\n    parts = line.split(\",\")\n    name = parts[0].strip()\n    host = parts[1].strip()\n    port = int(parts[2].strip())\n    return {\"name\": name, \"host\": host, \"port\": port}\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from original import parse_config\n\ndef test_parse_config():\n    assert parse_config(\"db,localhost,5432\") == {\n        \"name\": \"db\", \"host\": \"localhost\", \"port\": 5432,\n    }\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 120,
+    "max_tokens": 8000
+  },
+  {
+    "id": "refactor-006",
+    "category": "refactor",
+    "difficulty": "medium",
+    "prompt": "Refactor `original.py`: `compute_stats` reimplements sum/min/max by hand. Rewrite it using builtins (and keep empty-input handling), with identical behavior. Edit the file in place.",
+    "context_files": {
+      "original.py": "def compute_stats(numbers):\n    \"\"\"Return mean / max / min of numbers (0/None/None for empty).\"\"\"\n    total = 0\n    count = 0\n    for n in numbers:\n        total += n\n        count += 1\n    if not numbers:\n        return {\"mean\": 0, \"max\": None, \"min\": None}\n    biggest = numbers[0]\n    smallest = numbers[0]\n    for n in numbers[1:]:\n        if n > biggest:\n            biggest = n\n        if n < smallest:\n            smallest = n\n    return {\"mean\": total / count, \"max\": biggest, \"min\": smallest}\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from original import compute_stats\n\ndef test_compute_stats():\n    assert compute_stats([1, 2, 3]) == {\"mean\": 2.0, \"max\": 3, \"min\": 1}\n    assert compute_stats([]) == {\"mean\": 0, \"max\": None, \"min\": None}\n    assert compute_stats([7]) == {\"mean\": 7.0, \"max\": 7, \"min\": 7}\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 120,
+    "max_tokens": 8000
+  },
+  {
+    "id": "refactor-007",
+    "category": "refactor",
+    "difficulty": "hard",
+    "prompt": "Refactor `original.py`: `order_total` mixes discount and tax logic in one nested if/elif. Extract per-country policy into small helper functions (e.g. discount(country, subtotal) and tax(country, subtotal)) while keeping the exact same output. Edit the file in place.",
+    "context_files": {
+      "original.py": "def order_total(items, country):\n    \"\"\"Compute the final order total with country-specific discount + tax.\"\"\"\n    subtotal = 0\n    for item in items:\n        subtotal += item[\"price\"] * item[\"qty\"]\n    if country == \"US\":\n        if subtotal > 100:\n            subtotal = subtotal * 0.9\n        tax = subtotal * 0.08\n    elif country == \"EU\":\n        tax = subtotal * 0.2\n    elif country == \"IN\":\n        if subtotal > 50:\n            subtotal = subtotal * 0.95\n        tax = subtotal * 0.18\n    else:\n        tax = 0\n    return round(subtotal + tax, 2)\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from original import order_total\n\ndef test_order_total_us():\n    assert order_total([{\"price\": 50, \"qty\": 3}], \"US\") == round(150 * 0.9 * 1.08, 2)\n\ndef test_order_total_eu():\n    assert order_total([{\"price\": 10, \"qty\": 2}], \"EU\") == round(20 * 1.2, 2)\n\ndef test_order_total_in():\n    assert order_total([{\"price\": 60, \"qty\": 1}], \"IN\") == round(60 * 0.95 * 1.18, 2)\n\ndef test_order_total_other():\n    assert order_total([{\"price\": 5, \"qty\": 1}], \"JP\") == 5\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 180,
+    "max_tokens": 8000
+  },
+  {
+    "id": "refactor-008",
+    "category": "refactor",
+    "difficulty": "hard",
+    "prompt": "Refactor `original.py`: `route_event` is a long if/elif dispatch. Replace with a dict-based dispatch table (look up handlers[kind] and call it), keeping identical behavior including the KeyError on unknown kinds. Edit the file in place.",
+    "context_files": {
+      "original.py": "def route_event(event, handlers):\n    \"\"\"Dispatch event to handlers[<type>] with event['data'].\"\"\"\n    kind = event.get(\"type\")\n    if kind == \"create\":\n        return handlers[\"create\"](event[\"data\"])\n    if kind == \"update\":\n        return handlers[\"update\"](event[\"data\"])\n    if kind == \"delete\":\n        return handlers[\"delete\"](event[\"data\"])\n    if kind == \"read\":\n        return handlers[\"read\"](event[\"data\"])\n    raise KeyError(kind)\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from original import route_event\n\ndef test_route_event():\n    handlers = {\n        \"create\": lambda d: f\"created:{d}\",\n        \"update\": lambda d: f\"updated:{d}\",\n        \"delete\": lambda d: f\"deleted:{d}\",\n        \"read\": lambda d: f\"read:{d}\",\n    }\n    assert route_event({\"type\": \"create\", \"data\": \"a\"}, handlers) == \"created:a\"\n    assert route_event({\"type\": \"read\", \"data\": \"b\"}, handlers) == \"read:b\"\n    try:\n        route_event({\"type\": \"boom\", \"data\": \"x\"}, handlers)\n        assert False, \"should raise\"\n    except KeyError:\n        pass\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 180,
+    "max_tokens": 8000
+  },
+  {
+    "id": "implement-001",
+    "category": "implement",
+    "difficulty": "easy",
+    "prompt": "Implement `add(a, b)` in `solution.py`: return the sum of a and b. Replace the NotImplementedError with a real implementation. Edit the file in place.",
+    "context_files": {
+      "solution.py": "def add(a, b):\n    \"\"\"Return the sum of a and b.\"\"\"\n    raise NotImplementedError\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from solution import add\n\ndef test_add():\n    assert add(2, 3) == 5\n    assert add(-1, 1) == 0\n    assert add(0, 0) == 0\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 120,
+    "max_tokens": 8000
+  },
+  {
+    "id": "implement-002",
+    "category": "implement",
+    "difficulty": "easy",
+    "prompt": "Implement `max_of_three(a, b, c)` in `solution.py`: return the largest of the three numbers. Edit the file in place.",
+    "context_files": {
+      "solution.py": "def max_of_three(a, b, c):\n    \"\"\"Return the largest of the three numbers.\"\"\"\n    raise NotImplementedError\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from solution import max_of_three\n\ndef test_max_of_three():\n    assert max_of_three(1, 5, 3) == 5\n    assert max_of_three(7, 7, 2) == 7\n    assert max_of_three(-1, -2, -3) == -1\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 120,
+    "max_tokens": 8000
+  },
+  {
+    "id": "implement-003",
+    "category": "implement",
+    "difficulty": "medium",
+    "prompt": "Implement `count_words(text)` in `solution.py`: return a dict mapping each lowercased word to its count, splitting on whitespace. Edit the file in place.",
+    "context_files": {
+      "solution.py": "def count_words(text):\n    \"\"\"Return {word: count} for words in text.\n\n    Words are lowercased and split on any whitespace; punctuation stays\n    attached to the word.\n    \"\"\"\n    raise NotImplementedError\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from solution import count_words\n\ndef test_count_words():\n    assert count_words(\"the cat and the cat\") == {\"the\": 2, \"cat\": 2, \"and\": 1}\n    assert count_words(\"\") == {}\n    assert count_words(\"A a a\") == {\"a\": 3}\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 120,
+    "max_tokens": 8000
+  },
+  {
+    "id": "implement-004",
+    "category": "implement",
+    "difficulty": "medium",
+    "prompt": "Implement `find_duplicates(items)` in `solution.py`: return the values that appear more than once, in the order of first occurrence. Edit the file in place.",
+    "context_files": {
+      "solution.py": "def find_duplicates(items):\n    \"\"\"Return values that appear more than once, in first-occurrence order.\"\"\"\n    raise NotImplementedError\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from solution import find_duplicates\n\ndef test_find_duplicates():\n    assert find_duplicates([1, 2, 1, 3, 2, 4]) == [1, 2]\n    assert find_duplicates([1, 2, 3]) == []\n    assert find_duplicates([\"a\", \"b\", \"a\", \"c\", \"b\"]) == [\"a\", \"b\"]\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 120,
+    "max_tokens": 8000
+  },
+  {
+    "id": "implement-005",
+    "category": "implement",
+    "difficulty": "medium",
+    "prompt": "Implement `most_common(text, k)` in `solution.py`: return the k most common lowercased words, sorted by count descending then alphabetically. Edit the file in place.",
+    "context_files": {
+      "solution.py": "def most_common(text, k):\n    \"\"\"Return the k most common words in text.\n\n    Words are lowercased and split on whitespace. Ordered by count descending,\n    then alphabetically for ties. If fewer than k distinct words exist, return\n    all of them.\n    \"\"\"\n    raise NotImplementedError\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from solution import most_common\n\ndef test_most_common():\n    assert most_common(\"a b b c c c\", 2) == [\"c\", \"b\"]\n    assert most_common(\"x y z\", 10) == [\"x\", \"y\", \"z\"]\n    assert most_common(\"b a b a\", 1) == [\"a\"]\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 120,
+    "max_tokens": 8000
+  },
+  {
+    "id": "implement-006",
+    "category": "implement",
+    "difficulty": "hard",
+    "prompt": "Implement `parse_log_lines(lines)` in `solution.py`: parse 'LEVEL:timestamp message' lines into dicts, skipping lines that do not match (LEVEL must be INFO/WARN/ERROR). Edit the file in place.",
+    "context_files": {
+      "solution.py": "def parse_log_lines(lines):\n    \"\"\"Parse 'LEVEL:timestamp message' lines into a list of dicts.\n\n    Each dict: {\"level\": str, \"timestamp\": str, \"message\": str}.\n    Lines that do not match the 'LEVEL:timestamp message' shape (level in\n    INFO/WARN/ERROR) are skipped.\n    \"\"\"\n    raise NotImplementedError\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from solution import parse_log_lines\n\ndef test_parse_log_lines():\n    lines = [\n        \"INFO:2024-01-01T00:00:00Z started\",\n        \"ERROR:2024-01-01T00:00:01Z boom\",\n        \"garbage line\",\n        \"WARN:2024-01-01T00:00:02Z slow\",\n    ]\n    parsed = parse_log_lines(lines)\n    assert len(parsed) == 3\n    assert parsed[0] == {\"level\": \"INFO\", \"timestamp\": \"2024-01-01T00:00:00Z\", \"message\": \"started\"}\n    assert parsed[1][\"level\"] == \"ERROR\"\n    assert parsed[2][\"message\"] == \"slow\"\n    assert parse_log_lines([]) == []\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 180,
+    "max_tokens": 8000
+  },
+  {
+    "id": "implement-007",
+    "category": "implement",
+    "difficulty": "hard",
+    "prompt": "Implement the `LRUCache` class in `solution.py`: a fixed-capacity least-recently-used cache with O(1) get/put. get returns the value or None; put evicts the least-recently-used entry when over capacity. Edit the file in place.",
+    "context_files": {
+      "solution.py": "class LRUCache:\n    \"\"\"Least-recently-used cache of fixed capacity.\n\n    get(key) -> value or None; put(key, value) upserts and evicts the\n    least-recently-used entry when over capacity. Both should be O(1).\n    \"\"\"\n\n    def __init__(self, capacity):\n        raise NotImplementedError\n\n    def get(self, key):\n        raise NotImplementedError\n\n    def put(self, key, value):\n        raise NotImplementedError\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from solution import LRUCache\n\ndef test_lru_cache():\n    cache = LRUCache(2)\n    cache.put(1, 1)\n    cache.put(2, 2)\n    assert cache.get(1) == 1\n    cache.put(3, 3)          # evicts 2\n    assert cache.get(2) is None\n    assert cache.get(3) == 3\n    cache.put(4, 4)          # evicts 1\n    assert cache.get(1) is None\n    assert cache.get(4) == 4\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 180,
+    "max_tokens": 8000
+  },
+  {
+    "id": "cross_file-001",
+    "category": "cross_file",
+    "difficulty": "easy",
+    "prompt": "`math_ops.py` renamed its function to `add`, but `calculator.py` still imports the old name `add_numbers`, so the module fails to import. Update `calculator.py` to use `math_ops.add`. Edit the files in place.",
+    "context_files": {
+      "math_ops.py": "def add(a, b):\n    return a + b\n",
+      "calculator.py": "from math_ops import add_numbers  # stale import\n\ndef compute(a, b):\n    return add_numbers(a, b)\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from calculator import compute\n\ndef test_compute():\n    assert compute(2, 3) == 5\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 120,
+    "max_tokens": 8000
+  },
+  {
+    "id": "cross_file-002",
+    "category": "cross_file",
+    "difficulty": "medium",
+    "prompt": "`service.py` currently hardcodes a module-global logger. Make `process(data, logger=None)` accept an injectable logger (defaulting to the module one), and pass the log calls through the injected logger when provided. `logger.py` already provides a Logger class. Edit the files in place.",
+    "context_files": {
+      "logger.py": "class Logger:\n    def __init__(self, sink=None):\n        self._sink = sink or print\n\n    def log(self, msg):\n        self._sink(msg)\n",
+      "service.py": "from logger import Logger\n\n_logger = Logger()\n\ndef process(data):\n    \"\"\"Upper-case data, logging start/end. Accept an optional injectable\n    logger instead of the module-global one.\"\"\"\n    _logger.log(f\"start:{data}\")\n    result = data.upper()\n    _logger.log(f\"end:{result}\")\n    return result\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from service import process\n\nclass Recorder:\n    def __init__(self):\n        self.lines = []\n\n    def __call__(self, msg):\n        self.lines.append(msg)\n\ndef test_process_with_injected_logger():\n    rec = Recorder()\n    assert process(\"hi\", logger=rec) == \"HI\"\n    assert rec.lines == [\"start:hi\", \"end:HI\"]\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 120,
+    "max_tokens": 8000
+  },
+  {
+    "id": "cross_file-003",
+    "category": "cross_file",
+    "difficulty": "hard",
+    "prompt": "`client.py` hardcodes a timeout of 3. Change `fetch` to read `config.DEFAULT_TIMEOUT` from `config.py` so the timeout is configurable. Edit the files in place.",
+    "context_files": {
+      "config.py": "DEFAULT_TIMEOUT = 5\n",
+      "client.py": "def fetch(url):\n    # timeout should come from config.DEFAULT_TIMEOUT, not be hardcoded\n    timeout = 3\n    if url.startswith(\"https://\"):\n        return f\"secure {url} in {timeout}s\"\n    return f\"plain {url} in {timeout}s\"\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "import config\nfrom client import fetch\n\ndef test_timeout_reads_config(monkeypatch):\n    monkeypatch.setattr(config, \"DEFAULT_TIMEOUT\", 10)\n    assert fetch(\"https://example.com\") == \"secure https://example.com in 10s\"\n    assert fetch(\"http://example.com\") == \"plain http://example.com in 10s\"\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 180,
+    "max_tokens": 8000
+  },
+  {
+    "id": "cross_file-004",
+    "category": "cross_file",
+    "difficulty": "hard",
+    "prompt": "The codebase is migrating from the legacy tuple-based user API (`legacy.py`) to the modern dict-based one (`modern.py`). Update `app.py` to consume `modern.get_user` (which returns a dict) and adapt `user_summary` accordingly. `app.py` must reference `modern.get_user` through the module so the migration is verifiable. Edit the files in place.",
+    "context_files": {
+      "legacy.py": "def get_user(uid):\n    return (f\"user{uid}\", 30 + uid)\n",
+      "modern.py": "def get_user(uid):\n    return {\"id\": uid, \"name\": f\"user{uid}\", \"age\": 30 + uid}\n",
+      "app.py": "from legacy import get_user\n\ndef user_summary(uid):\n    name, age = get_user(uid)\n    return f\"{name} is {age}\"\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "import modern\nfrom app import user_summary\n\ndef test_migrated_to_modern(monkeypatch):\n    calls = []\n    original = modern.get_user\n\n    def spy(uid):\n        calls.append(uid)\n        return original(uid)\n\n    monkeypatch.setattr(modern, \"get_user\", spy)\n    assert user_summary(1) == \"user1 is 31\"\n    assert calls == [1]  # proves app reads through modern.get_user\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 180,
+    "max_tokens": 8000
+  },
+  {
+    "id": "cross_file-005",
+    "category": "cross_file",
+    "difficulty": "hard",
+    "prompt": "`fetch.py` keeps its memoization cache inline in a module-global dict. Extract caching into the `Cache` class in `cache.py` (already has get/set), refactor `fetch` to use a `Cache` instance instead of the inline dict, and keep `metrics.py` working. Edit the files in place.",
+    "context_files": {
+      "fetch.py": "_cache = {}\n\ndef fetch(url):\n    \"\"\"Fetch a URL, memoizing results. Should use the extracted Cache.\"\"\"\n    if url in _cache:\n        return _cache[url]\n    value = f\"data:{url}\"\n    _cache[url] = value\n    return value\n\n\ndef hit_count():\n    return len(_cache)\n",
+      "cache.py": "class Cache:\n    \"\"\"Simple in-memory key/value store with get/set.\"\"\"\n    def __init__(self):\n        self._data = {}\n\n    def get(self, key):\n        return self._data.get(key)\n\n    def set(self, key, value):\n        self._data[key] = value\n",
+      "metrics.py": "from fetch import fetch, hit_count\n\n\ndef report():\n    return {\"hits\": hit_count()}\n"
+    },
+    "verification": {
+      "type": "unit_test",
+      "test_code": "from cache import Cache\nfrom fetch import fetch\nfrom metrics import report\n\n\ndef test_fetch_uses_extracted_cache(monkeypatch):\n    calls = []\n\n    def counting_set(self, key, value):\n        calls.append(key)\n        Cache.set(self, key, value)\n\n    monkeypatch.setattr(Cache, \"set\", counting_set)\n    assert fetch(\"http://a\") == \"data:http://a\"\n    assert fetch(\"http://a\") == \"data:http://a\"  # served from cache\n    assert calls == [\"http://a\"]  # set called exactly once\n\ndef test_report_works():\n    assert report() == {\"hits\": 2}\n",
+      "pass_criteria": "all_tests_pass"
+    },
+    "timeout_seconds": 180,
+    "max_tokens": 8000
+  }
+]
