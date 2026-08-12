@@ -20,6 +20,7 @@ from .tools import ALL_TOOLS
 from .tools.base import Tool
 from .tools.agent import AgentTool
 from .tools.correction import run_with_correction
+from .tools.idempotency import IdempotencyStore
 from .tools.subagent_tools import SpawnSubagentTool
 from .prompt import system_prompt
 from .context import ContextManager
@@ -33,6 +34,7 @@ class Agent:
         max_context_tokens: int = 128_000,
         max_rounds: int = 50,
         memory: MemoryIntegration | None = None,
+        tool_selector=None,
     ):
         self.llm = llm
         self.tools = tools if tools is not None else ALL_TOOLS
@@ -45,6 +47,13 @@ class Agent:
         self.memory = memory
         if memory is not None:
             memory.install()
+        # P0 (tools/selector.py): when set, only the tools most relevant to the
+        # current user message are injected into the LLM call, cutting token
+        # cost and sharpening tool choice. None = inject all (backward compat).
+        self.tool_selector = tool_selector
+        # P0 (tools/idempotency.py): completed (tool, args) executions, used to
+        # serve identical calls from cache instead of re-applying a side effect.
+        self._idem = IdempotencyStore()
 
         # wire up sub-agent capability
         for t in self.tools:
@@ -56,8 +65,13 @@ class Agent:
     def _full_messages(self) -> list[dict]:
         return [{"role": "system", "content": self._system}] + self.messages
 
-    def _tool_schemas(self) -> list[dict]:
-        return [t.schema() for t in self.tools]
+    def _select_tools(self, query: str | None = None) -> list[Tool]:
+        if self.tool_selector is not None and query and query.strip():
+            return self.tool_selector.select(query, self.tools)
+        return self.tools
+
+    def _tool_schemas(self, query: str | None = None) -> list[dict]:
+        return [t.schema() for t in self._select_tools(query)]
 
     def chat(self, user_input: str, on_token=None, on_tool=None) -> str:
         """Process one user message. May involve multiple LLM/tool rounds."""
@@ -67,7 +81,7 @@ class Agent:
         for _ in range(self.max_rounds):
             resp = self.llm.chat(
                 messages=self._full_messages(),
-                tools=self._tool_schemas(),
+                tools=self._tool_schemas(user_input),
                 on_token=on_token,
             )
 
@@ -128,13 +142,30 @@ class Agent:
             inspect.signature(tool.execute).bind(**tc.arguments)
         except TypeError as e:
             return f"Error: bad arguments for {tc.name}: {e}"
+
+        # P0 idempotency: an idempotent tool that already completed with the
+        # exact same args is served from cache — re-issuing the call must not
+        # re-apply a write. Non-idempotent tools are never cached.
+        idempotent = bool(getattr(tool, "idempotent", True))
+        idem_key = self._idem.key(tool.name, tc.arguments)
+        if idempotent:
+            cached = self._idem.get(idem_key)
+            if cached is not None:
+                return cached
         try:
             # Phase 3 self-correction: deterministic retry strategies on
             # transient failures (retry_same / retry_modified with timeout
             # extension); everything else surfaces for the agent to reflect.
-            return run_with_correction(tool.execute, **tc.arguments)
+            # Non-idempotent tools pass retry_safe=False so a side effect that
+            # already happened before a failure is never double-applied.
+            result = run_with_correction(
+                tool.execute, retry_safe=idempotent, **tc.arguments
+            )
         except Exception as e:
             return f"Error executing {tc.name}: {e}"
+        if idempotent:
+            self._idem.put(idem_key, result)
+        return result
 
     def _exec_tools_parallel(self, tool_calls, on_tool=None) -> list[str]:
         """Run multiple tool calls concurrently using threads.

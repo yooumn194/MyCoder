@@ -14,15 +14,81 @@ result is BM25-only — never an error.
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
+
 from .store import MemoryStore
+from .tokenizer import tokenize_chinese
 
 RRF_K = 60
 
 
+class Reranker(ABC):
+    """Re-orders results after RRF fusion. Pluggable so a cross-encoder can
+    replace the default rule-based reranker without touching the retriever."""
+
+    @abstractmethod
+    def rerank(self, query: str, results: list[dict]) -> list[dict]:
+        """Return the same results in a new order (no add/remove)."""
+
+
+class RuleReranker(Reranker):
+    """Zero-dependency reranker: boosts chunks that contain more query terms
+    (lexical hit count) and penalizes chunks whose length is far from an ideal
+    range — a RAG classic to counter "longest doc always wins" and to nudge
+    document chunks over whole-document matches."""
+
+    def __init__(
+        self,
+        hit_bonus: float = 0.15,
+        ideal_min: int = 120,
+        ideal_max: int = 1600,
+        length_penalty_max: float = 0.3,
+    ) -> None:
+        self.hit_bonus = hit_bonus
+        self.ideal_min = ideal_min
+        self.ideal_max = ideal_max
+        self.length_penalty_max = length_penalty_max
+
+    def _length_penalty(self, length: int) -> float:
+        if length < self.ideal_min:
+            return self.length_penalty_max * (self.ideal_min - length) / self.ideal_min
+        if length > self.ideal_max:
+            return self.length_penalty_max * min(
+                2.0, (length - self.ideal_max) / self.ideal_max
+            )
+        return 0.0
+
+    def rerank(self, query: str, results: list[dict]) -> list[dict]:
+        terms = set(tokenize_chinese(query).split())
+
+        def score(result: dict) -> float:
+            content = result.get("content") or ""
+            hits = sum(1 for term in terms if term in content)
+            return (
+                float(result.get("score", 0.0))
+                + self.hit_bonus * hits
+                - self._length_penalty(len(content))
+            )
+
+        # stable sort: ties keep the pre-rerank (RRF) order
+        return sorted(results, key=score, reverse=True)
+
+
 class HybridRetriever:
-    def __init__(self, store: MemoryStore, *, rrf_k: int = RRF_K):
+    def __init__(
+        self,
+        store: MemoryStore,
+        *,
+        rrf_k: int = RRF_K,
+        reranker: Reranker | None = None,
+        query_rewriter=None,
+    ):
         self.store = store
         self.rrf_k = rrf_k
+        self.reranker = reranker if reranker is not None else RuleReranker()
+        # P0 (memory/query_rewrite.py): optional multi-turn query rewriter.
+        # Only applied when `history` is passed to search; None = no rewrite.
+        self.query_rewriter = query_rewriter
 
     # ------------------------------------------------------------------ public
     def search(
@@ -32,11 +98,27 @@ class HybridRetriever:
         scope: str | None = None,
         types: set[str] | list[str] | None = None,
         min_conf: float = 0.1,
+        rerank: bool = True,
+        history: list[dict] | None = None,
     ) -> list[dict]:
         """Hybrid search. Returns a list of result dicts (id/content/type/
-        scope/source/confidence/score), most relevant first."""
+        scope/source/confidence/score), most relevant first.
+
+        When `rerank` is on, up to 3×limit candidates are fused + filtered and
+        then re-ordered by the configured Reranker (default RuleReranker) before
+        the limit is applied — so a chunk that the RRF missed on rank but
+        matches more query terms can still surface.
+
+        When a `query_rewriter` is configured and `history` is supplied, the
+        raw message is first rewritten into a standalone retrieval query (so
+        fragments like "那它呢？" resolve against earlier turns).
+        """
         if not query or not query.strip():
             return []
+        if history is not None and self.query_rewriter is not None:
+            query = self.query_rewriter.rewrite(query, history)
+            if not query or not query.strip():
+                return []
         bm25 = self.store.bm25_search(query, limit=limit * 3, scope=scope)
         vector: list[tuple[str, float]] = []
         qvec = self.store.embed_query(query)
@@ -44,7 +126,11 @@ class HybridRetriever:
             vector = self.store.vector_search(qvec, limit=limit * 3, scope=scope)
 
         fused = self._rrf_fuse(bm25, vector) if vector else bm25
-        return self._apply_filters(fused, limit, scope, types, min_conf)
+        candidate_limit = limit * 3 if (rerank and self.reranker is not None) else limit
+        candidates = self._apply_filters(fused, candidate_limit, scope, types, min_conf)
+        if rerank and self.reranker is not None and len(candidates) > 1:
+            candidates = self.reranker.rerank(query, candidates)
+        return candidates[:limit]
 
     # ------------------------------------------------------------------ pieces
     def _rrf_fuse(
@@ -94,6 +180,7 @@ class HybridRetriever:
                     "source": row["source"],
                     "confidence": float(row["confidence"]),
                     "score": float(score),
+                    "metadata": row.get("metadata"),
                 }
             )
             if len(kept) >= limit:

@@ -293,25 +293,32 @@ class MemoryStore:
         return self._vector.name
 
     # ---------------------------------------------------------------- writes
-    def save(self, entry: MemoryEntry, *, source: str | None = None) -> str:
-        """Persist a memory. Near-duplicate content (>DEDUP_COSINE) is merged
-        into the existing row instead of creating a new one."""
+    def save(self, entry: MemoryEntry, *, source: str | None = None, dedup: bool = True) -> str:
+        """Persist a memory. By default near-duplicate content (>DEDUP_COSINE)
+        is merged into the existing row instead of creating a new one.
+
+        `dedup=False` forces a fresh row under the entry's id — used by the
+        document layer (document.py) where two chunks may legitimately share
+        wording and content-similarity dedup would break the deterministic
+        `doc:{doc_id}:{index}` id scheme.
+        """
         if self.filter_sensitive:
             entry.content = filter_sensitive(entry.content)
         if source is not None:
             entry.source = source
         if not entry.id:
             entry.id = new_id()
-        dup_id = self._find_duplicate(entry.content, exclude_id=entry.id)
-        if dup_id:
-            self.update(
-                dup_id,
-                content=entry.content,
-                type=entry.type,
-                confidence=entry.confidence,
-                metadata=entry.metadata,
-            )
-            return dup_id
+        if dedup:
+            dup_id = self._find_duplicate(entry.content, exclude_id=entry.id)
+            if dup_id:
+                self.update(
+                    dup_id,
+                    content=entry.content,
+                    type=entry.type,
+                    confidence=entry.confidence,
+                    metadata=entry.metadata,
+                )
+                return dup_id
 
         db = self._db_for(entry.scope)
         conn = db.conn
@@ -457,6 +464,26 @@ class MemoryStore:
                 data["metadata"] = _json_loads(data.get("metadata"))
                 entries.append(MemoryEntry.from_metadata(**data))
         entries.sort(key=lambda e: e.created_at, reverse=True)
+        return entries
+
+    def list_by_metadata(self, key: str, value: str) -> list[MemoryEntry]:
+        """Return entries whose metadata dict has metadata[key] == value.
+
+        Uses a coarse SQL LIKE pre-filter on the JSON `metadata` column and
+        re-verifies the parsed dict, so the match is exact even when the stored
+        JSON escapes characters. Used by the document layer to enumerate a
+        document's chunks for incremental reindexing.
+        """
+        pattern = f'%"{key}": "{value}"%'
+        entries: list[MemoryEntry] = []
+        for db in self._dbs():
+            for row in db.conn.execute(
+                "SELECT * FROM memories WHERE metadata LIKE ?", (pattern,)
+            ):
+                data = dict(row)
+                data["metadata"] = _json_loads(data.get("metadata"))
+                if data["metadata"].get(key) == value:
+                    entries.append(MemoryEntry.from_metadata(**data))
         return entries
 
     def fetch_rows(self, mem_ids: Iterable[str]) -> dict[str, dict]:

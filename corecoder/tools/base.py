@@ -10,6 +10,15 @@ class Tool(ABC):
     description: str
     parameters: dict  # JSON Schema for the function args
 
+    # Idempotency contract (P0, tools/idempotency.py):
+    #   True  -> executing the same (args) twice is safe to reuse, and transient
+    #            failures may be auto-retried (read-only / naturally idempotent
+    #            writes like write_file with identical content).
+    #   False -> side-effecting or non-deterministic (e.g. running an arbitrary
+    #            sandbox command). Never auto-retried; identical calls are not
+    #            deduped, so a retry can't double-apply a side effect.
+    idempotent: bool = True
+
     @abstractmethod
     def execute(self, **kwargs) -> str:
         """Run the tool and return a text result."""

@@ -12,6 +12,7 @@ from .base import Tool
 
 class SpawnSubagentTool(Tool):
     name = "spawn_subagent"
+    idempotent = False  # spawning a subagent has side effects (state, cost)
     description = (
         "Create a Subagent to execute an independent task with isolated "
         "context and its own token budget. Types: explorer (fast read-only "

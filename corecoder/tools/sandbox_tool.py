@@ -56,6 +56,7 @@ _DELETE_COMMAND_RE = re.compile(r"\b(rm\s|git\s+clean|rmdir\s)")
 
 class ExecuteInSandboxTool(Tool):
     name = "execute_in_sandbox"
+    idempotent = False  # arbitrary commands may have non-idempotent side effects
     description = (
         "Execute a shell command inside an isolated sandbox and return stdout, "
         "stderr, and the exit code. Isolation: the command runs in a throwaway "

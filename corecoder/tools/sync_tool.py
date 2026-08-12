@@ -28,6 +28,7 @@ class ToolResult(str):
 
 class SyncWorkspaceTool(Tool):
     name = "sync_workspace"
+    idempotent = False  # file copy / delete operations are not safely retryable
     description = (
         "Sync files the sandbox changed back from /workspace to the host "
         "project directory. Call it after execute_in_sandbox creates or "

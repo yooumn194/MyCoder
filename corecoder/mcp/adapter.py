@@ -27,6 +27,7 @@ class MCPToolAdapter(Tool):
     name = "mcp_unset"
     description = ""
     parameters = {}
+    idempotent = False  # MCP tool semantics are unknown — never auto-retry / dedup
 
     def __init__(self, client: MCPClient, server_name: str, mcp_tool_schema: dict) -> None:
         self._client = client

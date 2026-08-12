@@ -111,6 +111,7 @@ def run_with_correction(
     *,
     max_retries: int = 2,
     sleep_fn=time.sleep,
+    retry_safe: bool = True,
     **kwargs,
 ):
     """Execute fn(**kwargs), applying deterministic retry strategies.
@@ -120,6 +121,12 @@ def run_with_correction(
     * ESCALATE_USER / FAIL_FAST: raise UserEscalationError / FatalToolError;
     * everything else surfaces so the agent can reflect and choose an
       alternative method.
+
+    `retry_safe=False` disables the transient auto-retry entirely: a
+    non-idempotent tool may have already applied a side effect before failing,
+    so retrying could double-apply it. Such failures surface immediately for
+    the agent to decide (the caller — Agent._exec_tool — sets this from the
+    tool's `idempotent` trait).
 
     The agent's `_exec_tool` routes every tool call through this wrapper.
     """
@@ -144,10 +151,15 @@ def run_with_correction(
             strategy, params = ErrorClassifier.classify(exc)
             attempt += 1
 
-            if strategy in (
-                CorrectionStrategy.RETRY_SAME,
-                CorrectionStrategy.RETRY_MODIFIED,
-            ) and attempt <= max_retries:
+            if (
+                retry_safe
+                and strategy
+                in (
+                    CorrectionStrategy.RETRY_SAME,
+                    CorrectionStrategy.RETRY_MODIFIED,
+                )
+                and attempt <= max_retries
+            ):
                 if (
                     strategy == CorrectionStrategy.RETRY_MODIFIED
                     and "timeout" in kwargs
