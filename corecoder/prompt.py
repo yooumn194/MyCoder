@@ -3,10 +3,11 @@
 import os
 import platform
 
+from .prompts.reasoning import build_reasoning_section
 from .prompts.search_strategy import SEARCH_STRATEGY_PROMPT
 
 
-def system_prompt(tools) -> str:
+def system_prompt(tools, reasoning_strategy: str | None = None) -> str:
     cwd = os.getcwd()
     tool_list = "\n".join(f"- **{t.name}**: {t.description}" for t in tools)
     uname = platform.uname()
@@ -36,4 +37,4 @@ You help with software engineering: writing code, fixing bugs, refactoring, expl
 
 # Degraded-mode warning
 If you see a warning that commands are running WITHOUT Docker isolation (unsandboxed local mode), treat it as an emergency: the sandbox is unavailable and every command runs directly on the host with no containment. Prefer read-only commands, and stop rather than take destructive or network-reaching actions.
-""" + SEARCH_STRATEGY_PROMPT
+""" + build_reasoning_section(reasoning_strategy) + SEARCH_STRATEGY_PROMPT

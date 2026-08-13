@@ -100,6 +100,10 @@ class StatusResponse(BaseModel):
     current_step: str | None = None
     token_usage: int | None = None
     error: dict | None = None
+    # Mainstream LLM-service performance metrics, aggregated from the shared
+    # LLMTracer after the run: latency (avg/p95 ms), tokens (prompt/completion/
+    # total), LLM call count, error calls, cost (USD) and per-model cost.
+    perf: dict | None = None
 
 
 class HealthResponse(BaseModel):
@@ -193,25 +197,63 @@ async def _run_agent(
                     name: {"status": env.status, "summary": (env.summary or "")[:200]}
                     for name, env in result.results.items()
                 },
+                "perf": _session_perf(session_id),
             },
         )
         logger.info("agent_run_completed", status="success" if result.success else "failed", tokens=result.tokens_used)
     except TokenBudgetExceeded as exc:
-        await _fail(state_backend, session_id, "TOKEN_BUDGET_EXCEEDED", str(exc))
+        await _fail(state_backend, session_id, "TOKEN_BUDGET_EXCEEDED", str(exc), perf=_session_perf(session_id))
     except CircuitBreakerOpen as exc:
-        await _fail(state_backend, session_id, "CIRCUIT_BREAKER_OPEN", str(exc))
+        await _fail(state_backend, session_id, "CIRCUIT_BREAKER_OPEN", str(exc), perf=_session_perf(session_id))
     except SandboxTimeout as exc:
-        await _fail(state_backend, session_id, "SANDBOX_TIMEOUT", str(exc))
+        await _fail(state_backend, session_id, "SANDBOX_TIMEOUT", str(exc), perf=_session_perf(session_id))
     except Exception as exc:  # noqa: BLE001 - a worker must never die silently
-        await _fail(state_backend, session_id, "INTERNAL_ERROR", str(exc))
+        await _fail(state_backend, session_id, "INTERNAL_ERROR", str(exc), perf=_session_perf(session_id))
 
 
-async def _fail(state_backend: StateBackend, session_id: str, code: str, detail: str) -> None:
+async def _fail(
+    state_backend: StateBackend,
+    session_id: str,
+    code: str,
+    detail: str,
+    perf: dict | None = None,
+) -> None:
     await state_backend.save_session(
         session_id,
-        {"status": "failed", "current_step": "done", "token_usage": None, "error": {"code": code, "detail": detail}},
+        {
+            "status": "failed",
+            "current_step": "done",
+            "token_usage": None,
+            "error": {"code": code, "detail": detail},
+            "perf": perf,
+        },
     )
     logger.warning("agent_run_failed", error_code=code, detail=detail)
+
+
+def _session_perf(session_id: str) -> dict | None:
+    """Aggregate the run's LLM trace into concrete performance metrics.
+
+    Mirrors what production LLM services report: latency (avg / p95 ms),
+    token volume (prompt / completion / total), LLM call count, error calls,
+    cost (USD) and a per-model cost breakdown.
+    """
+    tracer = get_tracer()
+    summary = tracer.get_session_summary(session_id)
+    if summary["total_calls"] == 0:
+        return None
+    cost = tracer.get_cost_estimate(session_id, price_per_1k=DEFAULT_PRICE_PER_1K)
+    return {
+        "llm_calls": summary["total_calls"],
+        "prompt_tokens": summary["prompt_tokens"],
+        "completion_tokens": summary["completion_tokens"],
+        "total_tokens": summary["total_tokens"],
+        "avg_latency_ms": summary["avg_duration_ms"],
+        "p95_latency_ms": summary["p95_duration_ms"],
+        "error_calls": summary["error_count"],
+        "cost_usd": cost["total_cost_usd"],
+        "by_model": {m: v["cost"] for m, v in cost["by_model"].items()},
+    }
 
 
 # --------------------------------------------------------------------------
@@ -258,6 +300,7 @@ async def status(
         current_step=data.get("current_step"),
         token_usage=data.get("token_usage"),
         error=data.get("error"),
+        perf=data.get("perf"),
     )
 
 

@@ -15,6 +15,7 @@ from .sync_tool import SyncWorkspaceTool
 from .todo_tools import TodoUpdateTool, TodoWriteTool
 from .memory_tools import (
     MemoryConfirmTool,
+    MemoryCorrectTool,
     MemoryForgetTool,
     MemoryListTool,
     MemorySaveTool,
@@ -51,6 +52,7 @@ ALL_TOOLS = [
     MemoryListTool(),
     MemoryForgetTool(),
     MemoryConfirmTool(),
+    MemoryCorrectTool(),
     MemoryStatsTool(),
 ]
 

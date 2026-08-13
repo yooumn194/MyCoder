@@ -20,6 +20,10 @@ class SubagentDefinition:
     model_tier: str | None = None          # overrides Model Router; inherits when None
     max_turns: int = 10
     max_tokens: int = 50000
+    # Per-subagent context window (token efficiency, P2). A smaller window makes
+    # the sub-agent's ContextManager compress history earlier, so long loops
+    # don't re-send an ever-growing transcript on every LLM call.
+    max_context_tokens: int = 24000
     timeout_seconds: int = 300
     read_only: bool = False
     retry_on_failure: bool = True
@@ -37,7 +41,8 @@ BUILTIN_SUBAGENTS: dict[str, SubagentDefinition] = {
         allowed_tools=["grep_search", "list_files", "read_file"],
         read_only=True,
         model_tier="fast",
-        max_turns=8,
+        max_turns=5,
+        max_context_tokens=16000,
     ),
     "planner": SubagentDefinition(
         name="planner",
@@ -49,7 +54,8 @@ BUILTIN_SUBAGENTS: dict[str, SubagentDefinition] = {
         allowed_tools=["grep_search", "list_files", "read_file", "todo_write"],
         read_only=True,
         model_tier="powerful",
-        max_turns=5,
+        max_turns=4,
+        max_context_tokens=12000,
     ),
     "implementer": SubagentDefinition(
         name="implementer",
@@ -60,8 +66,9 @@ BUILTIN_SUBAGENTS: dict[str, SubagentDefinition] = {
         ),
         allowed_tools=["read_file", "write_file", "execute_in_sandbox", "grep_search"],
         model_tier="standard",
-        max_turns=15,
-        max_tokens=80000,
+        max_turns=8,
+        max_tokens=30000,
+        max_context_tokens=32000,
     ),
     "reviewer": SubagentDefinition(
         name="reviewer",
@@ -73,6 +80,7 @@ BUILTIN_SUBAGENTS: dict[str, SubagentDefinition] = {
         allowed_tools=["read_file", "grep_search", "list_files"],
         read_only=True,
         model_tier="standard",
-        max_turns=8,
+        max_turns=5,
+        max_context_tokens=16000,
     ),
 }

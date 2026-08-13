@@ -86,10 +86,37 @@ class LLMTracer:
         self._traces: list[LLMCallTrace] = []
         self._lock = threading.Lock()
         self.budget_guard = budget_guard
+        self.alert_manager = None
 
     def attach_budget_guard(self, guard: Any) -> None:
         """Feed completed calls' token usage into a TokenBudgetGuard."""
         self.budget_guard = guard
+
+    def attach_alert_manager(self, manager) -> None:
+        """Evaluate SLO alerts (observability/alerts.py) after every call."""
+        self.alert_manager = manager
+
+    def _session_metrics(self, session_id: str) -> dict:
+        summary = self.get_session_summary(session_id)
+        n = summary["total_calls"]
+        errors = summary["error_count"]
+        budget_ratio = None
+        if self.budget_guard is not None:
+            try:
+                budget_ratio = 1.0 - (
+                    self.budget_guard.get_remaining(session_id)
+                    / max(1, self.budget_guard.max_tokens_per_session)
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        return {
+            "calls": n,
+            "success_rate": (n - errors) / n if n else 1.0,
+            "p95_duration_ms": summary["p95_duration_ms"],
+            "total_tokens": summary["total_tokens"],
+            "error_count": errors,
+            "budget_ratio": budget_ratio,
+        }
 
     # ---------------------------------------------------------------- trace
     @contextmanager
@@ -159,6 +186,11 @@ class LLMTracer:
             try:
                 self.budget_guard.add_usage(session_id, prompt + completion)
             except Exception:  # noqa: BLE001 - budget is best-effort
+                pass
+        if self.alert_manager is not None:
+            try:
+                self.alert_manager.evaluate(session_id, self._session_metrics(session_id))
+            except Exception:  # noqa: BLE001 - alerts are best-effort
                 pass
 
     # -------------------------------------------------------------- summary

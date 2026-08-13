@@ -15,6 +15,7 @@ from __future__ import annotations
 import time
 
 from .store import MemoryStore
+from .tokenizer import tokenize_chinese
 from .types import DECAY_THRESHOLD
 
 _DECAY_FACTOR = {"project": 0.8, "global": 0.95}
@@ -77,6 +78,110 @@ class MemoryMaintainer:
                 if self.store.delete(row["id"]):
                     removed += 1
         return removed
+
+    # ------------------------------------------------------------ integrity
+    def audit_integrity(
+        self,
+        store: MemoryStore | None = None,
+        *,
+        min_overlap: float = 0.5,
+        min_shared_terms: int = 2,
+        low_confidence_threshold: float = 0.3,
+    ) -> list[dict]:
+        """Scan active memories for pollution (P1, wrong-memory correction).
+
+        Flags two failure modes:
+          * low_confidence — an `auto` memory that is still active but whose
+            confidence already dropped (its reliability is doubtful);
+          * conflicting    — two active memories on the SAME topic (high token
+            overlap) that are NOT near-duplicates: their different answers
+            can't both be right.
+
+        Returns a deduped list of issue dicts:
+          {id, content, confidence, issue, related_id?, related_content?}
+        """
+        store = store or self.store
+        active = store.list(include_deprecated=False)
+        flagged: list[dict] = []
+
+        for e in active:
+            if e.source == "auto" and e.confidence < low_confidence_threshold:
+                flagged.append(
+                    {
+                        "id": e.id,
+                        "content": e.content[:120],
+                        "confidence": e.confidence,
+                        "issue": "low_confidence",
+                    }
+                )
+
+        tokens = [(e.id, set(tokenize_chinese(e.content).split()), e) for e in active]
+        for i in range(len(tokens)):
+            for j in range(i + 1, len(tokens)):
+                id_a, ta, ea = tokens[i]
+                id_b, tb, eb = tokens[j]
+                shared = ta & tb
+                if len(shared) < min_shared_terms:
+                    continue
+                union = ta | tb
+                overlap = len(shared) / len(union) if union else 0.0
+                if overlap >= min_overlap:
+                    flagged.append(
+                        {
+                            "id": id_a,
+                            "content": ea.content[:120],
+                            "confidence": ea.confidence,
+                            "issue": "conflicting",
+                            "related_id": id_b,
+                            "related_content": eb.content[:120],
+                        }
+                    )
+                    flagged.append(
+                        {
+                            "id": id_b,
+                            "content": eb.content[:120],
+                            "confidence": eb.confidence,
+                            "issue": "conflicting",
+                            "related_id": id_a,
+                            "related_content": ea.content[:120],
+                        }
+                    )
+
+        # dedupe by id, keep the first issue recorded
+        seen: dict[str, dict] = {}
+        for f in flagged:
+            seen.setdefault(f["id"], f)
+        return list(seen.values())
+
+    def correct_memory(
+        self,
+        mem_id: str,
+        *,
+        content: str | None = None,
+        reason: str = "corrected",
+        store: MemoryStore | None = None,
+    ) -> bool:
+        """Fix a polluted memory (P1). Returns True when the memory existed.
+
+          * content given -> replace the wrong content, clear the deprecation
+            and raise confidence (the corrected fact becomes usable again);
+          * content None  -> deprecate the memory so it stops surfacing until a
+            human/agent rewrites it.
+        """
+        store = store or self.store
+        entry = store.get(mem_id)
+        if entry is None:
+            return False
+        if content is not None:
+            store.update(
+                mem_id,
+                content=content,
+                deprecated_by=None,
+                confidence=max(float(entry.confidence or 0.5), 0.6),
+            )
+        else:
+            store.update(mem_id, deprecated_by=reason)
+        return True
 
     # ------------------------------------------------------------------ stats
     def get_stats(self) -> dict:

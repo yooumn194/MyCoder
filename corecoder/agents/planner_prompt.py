@@ -34,6 +34,7 @@ _SYSTEM_HEADER = """\
 4. depends_on 只能引用本数组里已存在的 id；无依赖的任务留空数组
 5. 任务之间真有数据/顺序依赖才连边：能并行的就并行，避免不必要的串行
 6. estimated_tokens 是你对该子任务耗 token 量的预估（用于预算分配）
+7. 简单任务（单文件、几分钟能改完）直接输出一个 implementer 子任务，不要拆成 explorer → implementer → reviewer 长链——每个子 agent 都会多跑一轮 LLM 循环、成倍消耗 token
 """
 
 # Plain static text with real single braces — concatenated AFTER .format so it

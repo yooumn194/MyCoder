@@ -39,6 +39,7 @@ def test_public_api_exports():
         "memory_list",
         "memory_forget",
         "memory_confirm",
+        "memory_correct",
         "memory_stats",
     }
 

@@ -125,7 +125,12 @@ class SubagentRunner:
             raise RuntimeError("orchestrator has no llm; inject an executor instead")
         allowed = self.definition.allowed_tools
         tools = [t for t in getattr(self.orchestrator, "tools", []) if t.name in allowed]
-        sub = Agent(llm=llm, tools=tools, max_rounds=self.definition.max_turns)
+        sub = Agent(
+            llm=llm,
+            tools=tools,
+            max_rounds=self.definition.max_turns,
+            max_context_tokens=self.definition.max_context_tokens,
+        )
         raw = await asyncio.to_thread(
             sub.chat, f"{system_prompt}\n\nTask: {self.task}"
         )

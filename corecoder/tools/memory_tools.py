@@ -174,6 +174,48 @@ class MemoryConfirmTool(Tool):
         return f"❌ 未找到记忆 [{memory_id[:8]}]"
 
 
+class MemoryCorrectTool(Tool):
+    name = "memory_correct"
+    description = (
+        "Fix a polluted/wrong memory: provide content to replace it (clears "
+        "deprecation and raises confidence), or omit content to deprecate it so "
+        "it stops surfacing. The reverse of memory_confirm."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "memory_id": {"type": "string", "description": "Memory id to correct"},
+            "content": {
+                "type": "string",
+                "description": "Optional corrected content (replaces the wrong one)",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Why it was corrected (stored as deprecated_by when no content)",
+                "default": "corrected",
+            },
+        },
+        "required": ["memory_id"],
+    }
+
+    def __init__(self, *, store: MemoryStore | None = None) -> None:
+        self._store_ref = store
+
+    def _store(self) -> MemoryStore:
+        return self._store_ref or get_store()
+
+    def execute(self, memory_id: str, content: str | None = None, reason: str = "corrected") -> str:
+        from ..memory.maintenance import MemoryMaintainer
+
+        if MemoryMaintainer(self._store()).correct_memory(
+            memory_id, content=content, reason=reason
+        ):
+            if content is not None:
+                return f"✅ 记忆 [{memory_id[:8]}] 已用新内容纠正（置信度已提升）"
+            return f"🗑️ 记忆 [{memory_id[:8]}] 已废弃（不再参与检索）"
+        return f"❌ 未找到记忆 [{memory_id[:8]}]"
+
+
 class MemoryStatsTool(Tool):
     name = "memory_stats"
     description = "Show memory store statistics (counts, type distribution, avg confidence)."

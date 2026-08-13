@@ -23,6 +23,7 @@ from .tools.correction import run_with_correction
 from .tools.idempotency import IdempotencyStore
 from .tools.subagent_tools import SpawnSubagentTool
 from .prompt import system_prompt
+from .prompts.reasoning import resolve_strategy
 from .context import ContextManager
 
 
@@ -35,6 +36,7 @@ class Agent:
         max_rounds: int = 50,
         memory: MemoryIntegration | None = None,
         tool_selector=None,
+        reasoning_strategy: str | None = None,
     ):
         self.llm = llm
         self.tools = tools if tools is not None else ALL_TOOLS
@@ -42,7 +44,10 @@ class Agent:
         self.messages: list[dict] = []
         self.context = ContextManager(max_tokens=max_context_tokens)
         self.max_rounds = max_rounds
-        self._system = system_prompt(self.tools)
+        # P1 (prompts/reasoning.py): explicit reasoning strategy — ReAct /
+        # Plan-and-Execute / Reflection, switchable via PLANNING_STRATEGY.
+        self.reasoning_strategy = resolve_strategy(reasoning_strategy)
+        self._system = system_prompt(self.tools, reasoning_strategy=self.reasoning_strategy)
         # Phase 5: optional memory integration (CLI wires one; idempotent).
         self.memory = memory
         if memory is not None:

@@ -167,10 +167,10 @@ def _safe_json(resp) -> dict:
         return {}
 
 
-def json_dumps(data) -> str:
+def json_dumps(data, **kw) -> str:
     import json
 
-    return json.dumps(data, ensure_ascii=False)
+    return json.dumps(data, ensure_ascii=False, **kw)
 
 
 def json_loads(raw) -> dict:
@@ -179,7 +179,7 @@ def json_loads(raw) -> dict:
     return json.loads(raw)
 
 
-def run_one(problem: dict, base_url: str, workspace: Path, results_dir: Path, run_id: str, client) -> dict:
+def run_one(problem: dict, base_url: str, workspace: Path, results_dir: Path, run_id: str, client, variant: str = "default") -> dict:
     """Execute one problem end-to-end and return its result record."""
     qid = problem["id"]
     workdir = workspace / qid
@@ -194,15 +194,17 @@ def run_one(problem: dict, base_url: str, workspace: Path, results_dir: Path, ru
     session_id = f"eval-{qid}-{run_id}"
     deadline = time.time() + int(problem["timeout_seconds"])
     started = time.time()
+    perf: dict | None = None
 
     status_code, resp = _post_run(client, base_url, task, session_id, int(problem["max_tokens"]))
     _log(log, f"POST /run -> {status_code} {resp}")
     if status_code != 202:
-        return _result(problem, "failed", None, None, 0, None, "RUN_REJECTED", f"http {status_code}: {resp}")
+        return _result(problem, "failed", None, None, 0, None, "RUN_REJECTED", f"http {status_code}: {resp}", variant=variant, perf=perf)
 
     agent_status = None
     token_usage = None
     error: dict | None = None
+    perf: dict | None = None
     while time.time() < deadline:
         if httpx is not None:
             sr = client.get(f"{base_url}/v1/agent/status/{session_id}", timeout=30)
@@ -212,6 +214,8 @@ def run_one(problem: dict, base_url: str, workspace: Path, results_dir: Path, ru
                 token_usage = data.get("token_usage")
                 if data.get("error"):
                     error = data["error"]
+                if data.get("perf"):
+                    perf = data["perf"]
                 _log(log, f"poll status={agent_status} token_usage={token_usage}")
         time.sleep(_POLL_INTERVAL)
         if agent_status in _TERMINAL_STATUSES:
@@ -221,7 +225,7 @@ def run_one(problem: dict, base_url: str, workspace: Path, results_dir: Path, ru
     if agent_status not in _TERMINAL_STATUSES:
         agent_status = "timeout"
         _log(log, "watchdog: marked timeout (agent did not reach terminal status)")
-        return _result(problem, "timeout", None, None, duration, token_usage, "TIMEOUT", "exceeded timeout_seconds")
+        return _result(problem, "timeout", None, None, duration, token_usage, "TIMEOUT", "exceeded timeout_seconds", variant=variant, perf=perf)
 
     # verification
     if agent_status == "success":
@@ -232,15 +236,15 @@ def run_one(problem: dict, base_url: str, workspace: Path, results_dir: Path, ru
             passed = v["tests_passed"] == v["tests_total"] and v["failed"] == 0 and v["errors"] == 0
             error_cls = None if passed else "VERIFICATION_FAILED"
             error_msg = None if passed else f"pytest {v['tests_passed']}/{v['tests_total']} passed"
-            return _result(problem, "success", v["tests_passed"], v["tests_total"], duration, token_usage, error_cls, error_msg)
+            return _result(problem, "success", v["tests_passed"], v["tests_total"], duration, token_usage, error_cls, error_msg, variant=variant, perf=perf)
         except subprocess.TimeoutExpired:
-            return _result(problem, "success", None, None, duration, token_usage, "VERIFICATION_TIMEOUT", "pytest timed out")
+            return _result(problem, "success", None, None, duration, token_usage, "VERIFICATION_TIMEOUT", "pytest timed out", variant=variant, perf=perf)
 
     error_cls = (error or {}).get("code") or "AGENT_FAILED"
-    return _result(problem, "failed", None, None, duration, token_usage, error_cls, str(error or {}).get("detail") or error_cls)
+    return _result(problem, "failed", None, None, duration, token_usage, error_cls, (error or {}).get("detail") or error_cls, variant=variant, perf=perf)
 
 
-def _result(problem, agent_status, tests_passed, tests_total, duration, token_usage, error_cls, error_msg) -> dict:
+def _result(problem, agent_status, tests_passed, tests_total, duration, token_usage, error_cls, error_msg, variant="default", perf=None) -> dict:
     return {
         "id": problem["id"],
         "category": problem["category"],
@@ -252,6 +256,8 @@ def _result(problem, agent_status, tests_passed, tests_total, duration, token_us
         "token_usage": token_usage,
         "error_class": error_cls,
         "error_msg": error_msg,
+        "variant": variant,
+        "perf": perf,
     }
 
 
@@ -264,6 +270,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--parallel", type=int, default=3)
     parser.add_argument("--resume", action="store_true", help="skip problems already recorded in --results/raw_results.json")
     parser.add_argument("--dry-run", action="store_true", help="validate the dataset schema and exit")
+    parser.add_argument("--tag", default="default", help="variant label recorded on every result (for scorer --compare)")
     args = parser.parse_args(argv)
 
     data = load_dataset(Path(args.dataset))
@@ -301,7 +308,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[run] results -> {results_dir}")
 
     with ThreadPoolExecutor(max_workers=max(1, args.parallel)) as pool:
-        futures = {pool.submit(run_one, p, args.base_url, workspace, results_dir, run_id, client): p["id"] for p in todo}
+        futures = {
+            pool.submit(
+                run_one, p, args.base_url, workspace, results_dir, run_id, client, args.tag
+            ): p["id"]
+            for p in todo
+        }
         for fut in as_completed(futures):
             qid = futures[fut]
             try:

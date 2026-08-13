@@ -29,6 +29,7 @@ def test_tool_count():
         "memory_list",
         "memory_forget",
         "memory_confirm",
+        "memory_correct",
         "memory_stats",
     }
 
