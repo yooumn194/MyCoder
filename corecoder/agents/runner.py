@@ -121,6 +121,13 @@ class SubagentRunner:
         from ..agent import Agent
 
         llm = getattr(self.orchestrator, "llm", None)
+        # P2 model-tier routing (cost): when the orchestrator exposes a
+        # model_factory(tier) -> LLM, build a tier-appropriate model for this
+        # sub-agent (explorer=fast, implementer=standard, ...). Falls back to
+        # the orchestrator's shared LLM when no factory / no model for the tier.
+        factory = getattr(self.orchestrator, "model_factory", None)
+        if factory is not None:
+            llm = factory(self.definition.model_tier) or llm
         if llm is None:
             raise RuntimeError("orchestrator has no llm; inject an executor instead")
         allowed = self.definition.allowed_tools

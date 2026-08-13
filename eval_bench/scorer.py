@@ -44,6 +44,39 @@ def group_pass_rate(results: list[dict], key: str) -> dict[str, dict]:
     return {k: {**v, "pass_rate": round(v["pass"] / v["total"], 4) if v["total"] else 0.0} for k, v in sorted(buckets.items())}
 
 
+def badcases(results: list[dict]) -> list[dict]:
+    """Failed results extracted as a badcase 回流 list — each record carries
+    enough context (id/category/error_class/error_msg/perf) to feed back into
+    the dataset or an SFT pass."""
+    return [
+        {
+            "id": r.get("id"),
+            "category": r.get("category"),
+            "difficulty": r.get("difficulty"),
+            "agent_status": r.get("agent_status"),
+            "tests": f"{r.get('tests_passed')}/{r.get('tests_total')}",
+            "error_class": r.get("error_class"),
+            "error_msg": r.get("error_msg"),
+            "duration_s": r.get("duration_s"),
+            "variant": r.get("variant"),
+            "perf": r.get("perf"),
+        }
+        for r in results
+        if not is_pass(r)
+    ]
+
+
+def write_badcases(results: list[dict], path: Path) -> int:
+    """Write the badcase 回流 list to `path`; returns the number of bad cases."""
+    cases = badcases(results)
+    payload = {
+        "total_badcases": len(cases),
+        "badcases": cases,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return len(cases)
+
+
 def failure_distribution(results: list[dict]) -> dict[str, int]:
     dist = Counter(
         r.get("error_class") or ("PASS" if is_pass(r) else "UNKNOWN")
@@ -314,6 +347,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="baseline vs treatment delta report (two run dirs)")
     parser.add_argument("--chart", action="store_true", help="also render chart.png (needs matplotlib)")
     parser.add_argument("--base-url", default="", help="API base URL recorded in the report")
+    parser.add_argument("--badcases", default=None, help="badcase 回流 output path (default <results>/badcases.json)")
     args = parser.parse_args(argv)
 
     if args.compare:
@@ -355,6 +389,10 @@ def main(argv: list[str] | None = None) -> int:
     }
     (results_dir / "summary.json").write_text(json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8")
     (results_dir / "report.md").write_text(render_markdown(stats, results, env), encoding="utf-8")
+
+    badcase_path = Path(args.badcases) if args.badcases else results_dir / "badcases.json"
+    n_bad = write_badcases(results, badcase_path)
+    print(f"[scorer] badcases -> {badcase_path} ({n_bad} cases)")
 
     if args.chart:
         chart = results_dir / "chart.png"

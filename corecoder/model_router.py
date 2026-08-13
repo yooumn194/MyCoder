@@ -96,6 +96,11 @@ class ModelRouter:
         tier = self.classify_complexity(task_desc, file_count)
         return self.config.get("tiers", {}).get(tier.value)
 
+    def resolve_tier_model(self, tier: str) -> str | None:
+        """Concrete model name for a given tier (used to build per-tier LLMs)."""
+        self._hot_reload()
+        return self.config.get("tiers", {}).get(tier)
+
     # ---------------------------------------------------------------- helpers
 
     @staticmethod

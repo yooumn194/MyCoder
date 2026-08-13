@@ -40,8 +40,13 @@ from .dependencies import (
     get_tracer,
 )
 from .state_backend import RedisStateBackend, StateBackend
+from corecoder.observability.ratelimit import RateLimiter
 
 logger = get_logger("corecoder.api")
+
+# P2 rate limiting (opt-in): CORECODER_RATE_LIMIT=<requests/min>. A runaway
+# agent loop must not blow the provider's rate limit; 429 on breach.
+RATE_LIMITER: RateLimiter | None = RateLimiter.from_env()
 
 # --------------------------------------------------------------------------
 # Structured error types raised by the service layer and handled globally.
@@ -264,9 +269,14 @@ async def run(
     body: RunRequest,
     background_tasks: BackgroundTasks,
     state_backend: StateBackend = Depends(get_state_backend),
+    request: Request | None = None,
 ) -> RunResponse:
     session_id = sanitize_session_id(body.session_id)
     bind_contextvars(session_id=session_id)
+    if RATE_LIMITER is not None:
+        key = (request.client.host if request and request.client else "unknown")
+        if not RATE_LIMITER.allow(key):
+            raise HTTPException(status_code=429, detail="rate limit exceeded")
     if get_default_llm() is None:
         raise HTTPException(
             status_code=503,

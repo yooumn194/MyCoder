@@ -54,12 +54,17 @@ class Orchestrator:
         tools=None,
         planner: TaskPlanner | None = None,
         budget_guard: TokenBudgetGuard | None = None,
+        model_factory=None,
     ) -> None:
         self.blackboard = blackboard
         self.plan_store = plan_store
         self.model_router = model_router
         self.llm = llm
         self.tools = tools or []
+        # P2 model-tier routing: callable tier -> LLM. When set, each sub-agent
+        # gets a tier-appropriate model (cheaper for simple roles). None uses
+        # the shared orchestrator.llm (backward compatible).
+        self.model_factory = model_factory
         # Phase 6: LLM-driven task decomposition. When None, _decompose keeps the
         # original hardcoded single-explorer fallback (backward compatible).
         self._planner = planner

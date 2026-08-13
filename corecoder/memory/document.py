@@ -50,6 +50,10 @@ class Chunk:
     start_line: int
     end_line: int
     heading: str | None = None
+    # Parent-child index (P2): the chunk index where this chunk's section
+    # starts. The section's first chunk is the "parent" (larger context);
+    # later chunks are "children" that reference it via metadata.parent_id.
+    section_start: int = 0
 
 
 def _hash(text: str) -> str:
@@ -220,10 +224,21 @@ def chunk_document(
         next_line += len(unit_lines)
     if buf:
         _flush(buf_start, next_line, buf, chunks)
+
+    # assign section roots (parent-child index): a chunk that carries a heading
+    # starts a new section; its children share the same section_start.
+    section_start = 0
+    for i, chunk in enumerate(chunks):
+        if chunk.heading and i != 0:
+            section_start = i
+        chunk.section_start = section_start
     return chunks
 
 
 def _entry_for(chunk: Chunk, doc_id: str, scope: str) -> MemoryEntry:
+    parent_id = None
+    if chunk.index != chunk.section_start:
+        parent_id = chunk_id(doc_id, chunk.section_start)  # child -> section root
     return MemoryEntry(
         id=chunk_id(doc_id, chunk.index),
         content=chunk.text,
@@ -235,8 +250,26 @@ def _entry_for(chunk: Chunk, doc_id: str, scope: str) -> MemoryEntry:
             "chunk_hash": _hash(chunk.text),
             "start_line": chunk.start_line,
             "end_line": chunk.end_line,
+            "parent_id": parent_id,
         },
     )
+
+
+def retrieve_parents(store: "MemoryStore", results: list[dict]) -> list[dict]:
+    """Parent-child RAG (P2): for each matched child chunk, attach its parent's
+    (section-level, larger-context) content. A parent chunk is returned as-is
+    with parent_content == its own text. Never raises on missing parents."""
+    out: list[dict] = []
+    for result in results:
+        meta = result.get("metadata") or {}
+        parent_id = meta.get("parent_id")
+        parent_content = None
+        if parent_id:
+            parent = store.get(parent_id)
+            if parent is not None:
+                parent_content = parent.content
+        out.append({**result, "parent_id": parent_id, "parent_content": parent_content})
+    return out
 
 
 def save_document(
