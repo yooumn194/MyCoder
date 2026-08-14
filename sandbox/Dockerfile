@@ -1,4 +1,4 @@
-# CoreCoder sandbox image.
+# MyCoder sandbox image.
 #
 # Pinned to python:3.12-slim so the container ABI matches the host venv
 # (Python 3.12.0). The same image tag must satisfy both sides of the

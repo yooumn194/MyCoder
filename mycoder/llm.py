@@ -32,6 +32,7 @@ class LLMResponse:
     tool_calls: list[ToolCall] = field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cached_tokens: int = 0  # prompt tokens served from the provider's prefix cache
 
     @property
     def message(self) -> dict:
@@ -95,6 +96,26 @@ def _messages_text(messages: list) -> str:
     return "\n".join(parts)
 
 
+def _extract_cached_tokens(usage) -> int:
+    """Provider prompt-cache hit tokens.
+
+    OpenAI reports them in usage.prompt_tokens_details.cached_tokens; DeepSeek
+    in usage.prompt_cache_hit_tokens. 0 when the provider doesn't report it.
+    """
+    try:
+        details = getattr(usage, "prompt_tokens_details", None)
+        if details is not None:
+            cached = getattr(details, "cached_tokens", 0) or 0
+            if cached:
+                return int(cached)
+    except Exception:  # noqa: BLE001 - caching stats are best-effort
+        pass
+    try:
+        return int(getattr(usage, "prompt_cache_hit_tokens", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _context_value(name: str):
     """Read a structlog contextvar (e.g. session_id) if one is bound."""
     try:
@@ -155,6 +176,7 @@ def _traced(method):
                 completion = completion_est if completion_est is not None else -1
             ctx["prompt_tokens"] = prompt
             ctx["completion_tokens"] = completion
+            ctx["cached_tokens"] = getattr(resp, "cached_tokens", 0) or 0
             ctx["ttft_ms"] = ttft_ms
         return resp
 
@@ -200,12 +222,18 @@ class LLM:
         tools: list[dict] | None = None,
         on_token=None,
         response_format: dict | None = None,
+        predictive_executor=None,
     ) -> LLMResponse:
         """Send messages, stream back response, handle tool calls.
 
         `response_format` (e.g. {"type": "json_object"}) forces structured
         output — used by the sub-agent envelope repair pass (Phase 4). Note it
         generally cannot be combined with `tools` on the same call.
+
+        `predictive_executor` (optional) is called with a ToolCall the moment
+        its streamed arguments parse as complete JSON — so the caller can start
+        executing it WHILE the stream is still generating (predictive / stream
+        execution, saving one serial round-trip per tool round).
         """
         params: dict = {
             "model": self.model,
@@ -230,8 +258,10 @@ class LLM:
 
         content_parts: list[str] = []
         tc_map: dict[int, dict] = {}  # index -> {id, name, arguments_str}
+        predicted_idx: set[int] = set()  # tool-call indices already handed off
         prompt_tok = 0
         completion_tok = 0
+        cached_tok = 0
 
         for chunk in stream:
             # usage info comes in the final chunk
@@ -240,6 +270,7 @@ class LLM:
                 # running totals below don't blow up on int + None
                 prompt_tok = chunk.usage.prompt_tokens or 0
                 completion_tok = chunk.usage.completion_tokens or 0
+                cached_tok = _extract_cached_tokens(chunk.usage)
 
             if not chunk.choices:
                 continue
@@ -264,6 +295,27 @@ class LLM:
                             tc_map[idx]["name"] = tc_delta.function.name
                         if tc_delta.function.arguments:
                             tc_map[idx]["args"] += tc_delta.function.arguments
+                    # Predictive execution: once this call's streamed arguments
+                    # parse as complete JSON, hand it to the executor NOW so it
+                    # runs while the stream keeps generating (saves one RTT).
+                    if (
+                        predictive_executor is not None
+                        and idx not in predicted_idx
+                        and tc_map[idx]["name"]
+                        and tc_map[idx]["args"]
+                    ):
+                        try:
+                            args = json.loads(tc_map[idx]["args"])
+                        except json.JSONDecodeError:
+                            continue  # args still partial; keep accumulating
+                        predicted_idx.add(idx)
+                        predictive_executor(
+                            ToolCall(
+                                id=tc_map[idx]["id"],
+                                name=tc_map[idx]["name"],
+                                arguments=args,
+                            )
+                        )
 
         # parse accumulated tool calls
         parsed: list[ToolCall] = []
@@ -283,6 +335,7 @@ class LLM:
             tool_calls=parsed,
             prompt_tokens=prompt_tok,
             completion_tokens=completion_tok,
+            cached_tokens=cached_tok,
         )
 
     def _call_with_retry(self, params: dict, max_retries: int = 3):
@@ -344,8 +397,12 @@ class LiteLLM(LLM):
         messages: list[dict],
         tools: list[dict] | None = None,
         on_token=None,
+        predictive_executor=None,
     ) -> LLMResponse:
-        """Send messages via litellm, stream back response, handle tool calls."""
+        """Send messages via litellm, stream back response, handle tool calls.
+
+        predictive_executor is accepted for interface parity with LLM.chat but
+        not used (predictive execution is implemented on the LLM backend)."""
         params: dict = {
             "model": self.model,
             "messages": messages,

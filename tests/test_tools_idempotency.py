@@ -150,3 +150,17 @@ def test_agent_tool_metrics_success_and_failure():
     assert m["success_rate"] == 0.5
     assert m["failure_rate"] == 0.5
     assert m["retries"] == 0
+
+
+def test_idempotency_store_bounded_evicts_oldest():
+    """The cache is bounded (FIFO) so a long session can't grow without bound."""
+    store = IdempotencyStore(maxsize=2)
+    store.put(store.key("a", {"x": 1}), "1")
+    store.put(store.key("b", {"x": 1}), "2")
+    store.put(store.key("c", {"x": 1}), "3")  # evicts "a"
+    assert store.get(store.key("a", {"x": 1})) is None  # evicted
+    assert store.get(store.key("b", {"x": 1})) == "2"
+    assert store.get(store.key("c", {"x": 1})) == "3"
+    s = store.stats()
+    assert s["misses"] == 1 and s["hits"] == 2 and s["total"] == 3
+    assert s["hit_rate"] == round(2 / 3, 4)

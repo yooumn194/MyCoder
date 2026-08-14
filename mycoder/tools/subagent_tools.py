@@ -14,11 +14,10 @@ class SpawnSubagentTool(Tool):
     name = "spawn_subagent"
     idempotent = False  # spawning a subagent has side effects (state, cost)
     description = (
-        "Create a Subagent to execute an independent task with isolated "
-        "context and its own token budget. Types: explorer (fast read-only "
-        "search), planner (design a plan), implementer (make code changes), "
-        "reviewer (code review). Returns an RFC v1.0.1 result envelope "
-        "(status / summary / error category / artifacts)."
+        "Create a Subagent for an independent task with isolated context and "
+        "own token budget. Types: explorer (fast search), planner (design), "
+        "implementer (make changes), reviewer (code review). Returns an RFC "
+        "v1.0.1 result envelope."
     )
     parameters = {
         "type": "object",

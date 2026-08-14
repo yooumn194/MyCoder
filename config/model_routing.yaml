@@ -1,4 +1,4 @@
-# Model routing config for the Phase 3 router (corecoder/model_router.py).
+# Model routing config for the Phase 3 router (mycoder/model_router.py).
 # Hot-reloaded on file change — edit this and the next classify() call picks it up.
 #
 # tiers:      concrete model names per tier (edit to match your providers)

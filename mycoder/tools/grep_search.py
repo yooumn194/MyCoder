@@ -43,12 +43,9 @@ class _SearchError(Exception):
 class GrepSearchTool(Tool):
     name = "grep_search"
     description = (
-        "Regex-search the project for a pattern and return matches grouped by "
-        "file with line numbers (e.g. '## src/auth/handler.py' then 'L23: "
-        "def authenticate_user(...)'). Uses ripgrep when available and a pure-"
-        "Python fallback otherwise. Restrict with file_types (comma-separated "
-        "extensions like 'py,js') to keep results small. Prefer this over the "
-        "legacy `grep` tool: it caps results and filters by file type."
+        "Regex-search the project, matches grouped by file with line numbers. "
+        "Uses ripgrep (pure-Python fallback). Restrict with file_types (e.g. "
+        "'py,js') to keep results small; prefer over the legacy grep tool."
     )
     parameters = {
         "type": "object",

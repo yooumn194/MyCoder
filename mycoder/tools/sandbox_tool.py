@@ -58,18 +58,12 @@ class ExecuteInSandboxTool(Tool):
     name = "execute_in_sandbox"
     idempotent = False  # arbitrary commands may have non-idempotent side effects
     description = (
-        "Execute a shell command inside an isolated sandbox and return stdout, "
-        "stderr, and the exit code. Isolation: the command runs in a throwaway "
-        "Docker container with no network, a read-only system, a non-root user, "
-        "no extra privileges, memory/CPU limits, and a hard timeout. The "
-        "project is mounted read-only; writes land in a scratch workspace that "
-        "is discarded afterwards. On success the output lists the changed "
-        "files (up to 50; run sync_workspace() to pull them back to the host). "
-        "Risky commands (network egress, package installs, git rewrites/"
-        "pushes, recursive deletes) prompt the operator for confirmation first. "
-        "If Docker is unavailable, falls back to restricted local execution "
-        "only after operator confirmation. Use this for running tests, git, "
-        "scripts, and other shell commands."
+        "Run a shell command in an isolated Docker sandbox and return stdout, "
+        "stderr, exit code. Isolation: no network, read-only root, non-root, "
+        "zero capabilities, memory/CPU/pids limits, hard timeout. Writes land "
+        "in /workspace — call sync_workspace() to pull them back. Risky "
+        "commands (network, installs, git push, recursive rm) ask for "
+        "confirmation first. Use for tests, git, scripts."
     )
     parameters = {
         "type": "object",

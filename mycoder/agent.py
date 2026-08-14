@@ -162,11 +162,25 @@ class Agent:
         self.context.maybe_compress(self.messages, self.llm)
 
         for _ in range(self.max_rounds):
-            resp = self.llm.chat(
-                messages=self._full_messages(),
-                tools=self._tool_schemas(self._selection_query()),
-                on_token=on_token,
-            )
+            # Predictive execution: the LLM streams tool calls; a call whose
+            # arguments complete early is handed to a pool and runs WHILE the
+            # stream keeps generating, so its result is ready when generation
+            # finishes — one serial RTT saved per round (StreamingToolExecutor).
+            predicted: dict[str, concurrent.futures.Future] = {}
+            pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+            try:
+
+                def _predict(tc):
+                    predicted[tc.id] = pool.submit(self._exec_tool, tc)
+
+                resp = self.llm.chat(
+                    messages=self._full_messages(),
+                    tools=self._tool_schemas(self._selection_query()),
+                    on_token=on_token,
+                    predictive_executor=_predict,
+                )
+            finally:
+                pool.shutdown(wait=True)
 
             # no tool calls -> LLM is done, return text
             if not resp.tool_calls:
@@ -174,32 +188,27 @@ class Agent:
                 # Post-LLM: redact secret shapes before the reply reaches the user.
                 return redact_output(resp.content)
 
-            # tool calls -> execute (parallel when multiple, like Claude Code's
-            # StreamingToolExecutor which runs independent tools concurrently)
+            # tool calls -> execute. A call already predicted ran concurrently
+            # during generation; the rest run now. Results are guarded (injection
+            # scan) and wrapped in <tool_output> role tags before回灌.
             self.messages.append(resp.message)
 
             try:
-                if len(resp.tool_calls) == 1:
-                    tc = resp.tool_calls[0]
+                results: list[str] = []
+                for tc in resp.tool_calls:
                     if on_tool:
                         on_tool(tc.name, tc.arguments)
-                    result = self._exec_tool(tc)
+                    fut = predicted.get(tc.id)
+                    results.append(
+                        fut.result() if fut is not None else self._exec_tool(tc)
+                    )
+                for tc, result in zip(resp.tool_calls, results):
                     result = self._guard_tool_result(tc.name, result)
                     self.messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
                         "content": self._wrap_tool_output(tc.name, result),
                     })
-                else:
-                    # parallel execution for multiple tool calls
-                    results = self._exec_tools_parallel(resp.tool_calls, on_tool)
-                    for tc, result in zip(resp.tool_calls, results):
-                        result = self._guard_tool_result(tc.name, result)
-                        self.messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "content": self._wrap_tool_output(tc.name, result),
-                        })
             except KeyboardInterrupt:
                 # Ctrl+C mid-execution would leave the assistant tool_calls
                 # message without replies, poisoning the next request; backfill
@@ -309,7 +318,7 @@ class Agent:
 
         # tc -> key. Idempotent duplicates share a key (dedup: one run, all
         # reuse the result); non-idempotent calls get a unique key each.
-        tc_key: dict[object, tuple[str, str]] = {}
+        tc_key: dict[str, tuple[str, str]] = {}
         order: list[tuple[tuple[str, str], object]] = []
         seen: set[tuple[str, str]] = set()
         for i, tc in enumerate(tool_calls):
@@ -323,13 +332,13 @@ class Agent:
             else:
                 key = ("__run__", i)
                 order.append((key, tc))
-            tc_key[tc] = key
+            tc_key[tc.id] = key
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             futures = {key: pool.submit(self._exec_tool, tc) for key, tc in order}
             results = {key: futures[key].result() for key, _ in order}
 
-        return [results[tc_key[tc]] for tc in tool_calls]
+        return [results[tc_key[tc.id]] for tc in tool_calls]
 
     def _answer_pending_tool_calls(self, tool_calls):
         """Backfill a tool reply for every call that didn't get one.

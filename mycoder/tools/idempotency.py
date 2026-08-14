@@ -34,13 +34,19 @@ class IdempotencyStore:
     calls on a thread pool (agent.py) — concurrent get/put must not race.
     Parallel duplicate execution is additionally deduped in
     Agent._exec_tools_parallel, which reuses the same (tool, fingerprint) key.
+
+    Bounded: a long agent session can issue thousands of unique (tool, args)
+    calls; without a cap the cache grows without bound. Dict insertion order
+    is used as a cheap FIFO — the oldest entries are evicted first once over
+    ``maxsize``.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, maxsize: int = 512) -> None:
         self._store: dict[tuple[str, str], str] = {}
         self._lock = threading.RLock()
         self._hits = 0
         self._misses = 0
+        self._maxsize = max(1, int(maxsize))
 
     def key(self, tool_name: str, args: dict[str, Any]) -> tuple[str, str]:
         return (tool_name, _fingerprint(args or {}))
@@ -57,6 +63,8 @@ class IdempotencyStore:
     def put(self, key: tuple[str, str], result: str) -> None:
         with self._lock:
             self._store[key] = result
+            while len(self._store) > self._maxsize:
+                self._store.pop(next(iter(self._store)))  # evict oldest (FIFO)
 
     def __contains__(self, key: tuple[str, str]) -> bool:
         with self._lock:

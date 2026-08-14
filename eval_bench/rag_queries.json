@@ -1,6 +1,6 @@
 {
-  "doc": "README_CN.md",
-  "note": "真实 QA 评测集：以 MyCoder 自身文档（README_CN.md）为检索库，查询为开发者真实问题，expected_terms 为文档金标准词。",
+  "doc": "README.md",
+  "note": "真实 QA 评测集：以 MyCoder 自身文档（README.md）为检索库，查询为开发者真实问题，expected_terms 为文档金标准词。",
   "queries": [
     {"id": "q01", "query": "代码在沙箱里如何运行", "expected_terms": ["沙箱"]},
     {"id": "q02", "query": "沙箱的资源限制怎么配置", "expected_terms": ["资源限制"]},

@@ -286,6 +286,11 @@ def main(argv: list[str] | None = None) -> int:
             print("[compare] 需要 --embedder config（纯向量基线需要语义向量）")
             return 1
         table = evaluate_compare(doc_text, queries, k=args.k, embedder=embedder)
+        if args.report:
+            Path(args.report).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.report).write_text(
+                json.dumps(table, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
         rows = table["rows"]
         names = {
             "pure_vector": "纯向量 (baseline)",
@@ -306,6 +311,7 @@ def main(argv: list[str] | None = None) -> int:
     report = evaluate(doc_text, queries, k=args.k, embedder=embedder)
     report["citation_integrity"] = evaluate_citations(SAMPLE_ANSWERS)
     if args.report:
+        Path(args.report).parent.mkdir(parents=True, exist_ok=True)
         Path(args.report).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     mode = "semantic-vector" if args.embedder == "config" else "bm25-only"
     print(f"[rag_eval] backend={mode}  k={args.k}")

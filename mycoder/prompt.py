@@ -9,7 +9,11 @@ from .prompts.search_strategy import SEARCH_STRATEGY_PROMPT
 
 def system_prompt(tools, reasoning_strategy: str | None = None) -> str:
     cwd = os.getcwd()
-    tool_list = "\n".join(f"- **{t.name}**: {t.description}" for t in tools)
+    # Perf: tool definitions (description + parameters) already arrive in the
+    # `functions`/`tools` parameter every call. Re-listing every tool's full
+    # description here doubled the fixed prompt for nothing — keep just the
+    # names and point at the schema for details.
+    tool_names = "、".join(sorted(t.name for t in tools))
     uname = platform.uname()
 
     return f"""\
@@ -22,7 +26,11 @@ You help with software engineering: writing code, fixing bugs, refactoring, expl
 - Python: {platform.python_version()}
 
 # Tools
-{tool_list}
+{tool_names}
+
+（每个工具的定义、参数与适用场景以本次调用的 functions 参数为准。）
+
+# Rules
 
 # Rules
 1. **Read before edit.** Always read a file before modifying it.

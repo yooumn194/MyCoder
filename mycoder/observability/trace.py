@@ -73,6 +73,7 @@ class LLMCallTrace:
     status: str  # success | error | timeout
     error_msg: str | None = None
     ttft_ms: float | None = None  # time-to-first-token (streaming), None if n/a
+    cached_tokens: int = 0  # prompt tokens served from the provider's prefix cache
     timestamp: float = field(default_factory=time.time)
 
 
@@ -125,7 +126,12 @@ class LLMTracer:
         """Time one LLM call. Yields a mutable dict the caller fills with
         prompt_tokens / completion_tokens before the block exits. On exception
         the trace is recorded as error/timeout and re-raised."""
-        ctx: dict[str, Any] = {"prompt_tokens": 0, "completion_tokens": 0, "ttft_ms": None}
+        ctx: dict[str, Any] = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cached_tokens": 0,
+            "ttft_ms": None,
+        }
         started = time.monotonic()
         try:
             yield ctx
@@ -133,7 +139,7 @@ class LLMTracer:
             status = "timeout" if _is_timeout(exc) else "error"
             self._record(
                 session_id, caller, model, 0, 0, _ms(started), status, str(exc),
-                ttft_ms=ctx.get("ttft_ms"),
+                ttft_ms=ctx.get("ttft_ms"), cached_tokens=ctx.get("cached_tokens"),
             )
             logger.warning(
                 "llm_call_failed",
@@ -151,7 +157,7 @@ class LLMTracer:
         duration = _ms(started)
         self._record(
             session_id, caller, model, prompt, completion, duration, "success", None,
-            ttft_ms=ctx.get("ttft_ms"),
+            ttft_ms=ctx.get("ttft_ms"), cached_tokens=ctx.get("cached_tokens"),
         )
         logger.info(
             "llm_call",
@@ -175,6 +181,7 @@ class LLMTracer:
         status: str,
         error_msg: str | None,
         ttft_ms: float | None = None,
+        cached_tokens: int = 0,
     ) -> None:
         trace = LLMCallTrace(
             call_id=_new_id(),
@@ -188,6 +195,7 @@ class LLMTracer:
             status=status,
             error_msg=error_msg,
             ttft_ms=ttft_ms,
+            cached_tokens=int(cached_tokens or 0),
         )
         with self._lock:
             self._traces.append(trace)
@@ -234,6 +242,8 @@ class LLMTracer:
             "p95_duration_ms": 0.0,
             "avg_ttft_ms": 0.0,
             "p95_ttft_ms": 0.0,
+            "prompt_cache_hit_tokens": 0,
+            "prompt_cache_hit_rate": 0.0,
             "error_count": 0,
         }
         if n == 0:
@@ -251,6 +261,7 @@ class LLMTracer:
             if ttfts
             else 0.0
         )
+        cached = sum(t.cached_tokens for t in traces)
         return {
             "session_id": label,
             "total_calls": n,
@@ -262,6 +273,8 @@ class LLMTracer:
             "p95_duration_ms": round(p95, 2),
             "avg_ttft_ms": round(avg_ttft, 2),
             "p95_ttft_ms": round(p95_ttft, 2),
+            "prompt_cache_hit_tokens": cached,
+            "prompt_cache_hit_rate": round(cached / max(1, prompt), 4),
             "error_count": errors,
         }
 

@@ -184,7 +184,7 @@ def test_agent_output_is_redacted():
     from mycoder.llm import LLM, LLMResponse
 
     agent = Agent(llm=LLM.__new__(LLM), injection_detector=InjectionDetector())
-    agent.llm.chat = lambda messages, tools=None, on_token=None: LLMResponse(
+    agent.llm.chat = lambda messages, tools=None, on_token=None, predictive_executor=None: LLMResponse(
         content="result: sk-ABCdefGHIJKLMNOPQRSTUVWXYZ123456 end"
     )
     out = agent.chat("hi")

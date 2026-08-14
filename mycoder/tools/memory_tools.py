@@ -97,7 +97,13 @@ class MemorySearchTool(Tool):
     def execute(self, query: str, scope: str | None = None, limit: int = 10) -> str:
         results = self._retriever().search(query, limit=limit, scope=scope)
         if not results:
-            return f"🔍 未找到相关记忆（query: {query}）"
+            # 探索治理：明确告知"无匹配 + 不要反复换词重试"，避免 agent 在
+            # 空记忆库上反复试 scope/关键词（浪费轮次，拖低工具成功率）。
+            return (
+                f"🔍 未找到相关记忆（query: {query}）\n"
+                "[no-match] 该查询无匹配记忆，不建议对同一主题反复换词/换 scope 重试。"
+                "如需建立该主题记忆请先用 memory_save 保存；否则应换其他主题或直接继续任务。"
+            )
         # P2 citation tracing: results are numbered so the agent can cite [n];
         # the source anchor (doc location) makes the citation traceable.
         lines = [

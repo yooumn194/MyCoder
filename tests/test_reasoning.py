@@ -108,7 +108,7 @@ def test_auto_mode_rebuilds_system_per_task(monkeypatch):
 
     monkeypatch.delenv("PLANNING_STRATEGY", raising=False)
     agent = Agent(llm=LLM.__new__(LLM), tools=[ALL_TOOLS[0]])
-    agent.llm.chat = lambda messages, tools=None, on_token=None: LLMResponse(content="ok")
+    agent.llm.chat = lambda messages, tools=None, on_token=None, predictive_executor=None: LLMResponse(content="ok")
     assert agent.reasoning_strategy == "react"
 
     # a plan-style task switches the strategy + system prompt

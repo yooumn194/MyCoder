@@ -1,4 +1,4 @@
-# MCP server configuration for the Phase 3.5 client (corecoder/mcp/).
+# MCP server configuration for the Phase 3.5 client (mycoder/mcp/).
 # All servers default to `enabled: false` — opt in per server, or the client
 # will try to spawn them on every startup.
 #

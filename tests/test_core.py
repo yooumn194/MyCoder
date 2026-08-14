@@ -270,3 +270,30 @@ def test_compression_stats_accounts_saved_tokens():
     assert s["tokens_before"] > s["tokens_after"]
     assert s["tokens_saved"] > 0
     assert s["avg_compression_ratio"] > 0.0
+
+
+def test_predictive_executor_fires_when_tool_args_complete():
+    """Predictive execution: a streamed tool call is handed to the executor the
+    moment its args parse as complete JSON — before generation finishes."""
+    from mycoder.llm import LLM
+
+    class _F:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+    def fake_stream(params):
+        tc1 = _F(index=0, id="t1", function=_F(name="read_file", arguments='{"file_'))
+        yield _F(choices=[_F(delta=_F(content=None, tool_calls=[tc1]))], usage=None)
+        tc2 = _F(index=0, id=None, function=_F(name=None, arguments='path": "a.py"}'))
+        yield _F(choices=[_F(delta=_F(content=None, tool_calls=[tc2]))], usage=None)
+
+    llm = LLM(model="m", api_key="k", base_url="http://localhost")
+    llm._call_with_retry = lambda params: fake_stream(params)
+
+    executed = []
+    resp = llm.chat([{"role": "user", "content": "x"}], predictive_executor=executed.append)
+    assert len(executed) == 1  # fired once, on completion of the args
+    assert executed[0].name == "read_file"
+    assert executed[0].arguments == {"file_path": "a.py"}
+    assert resp.tool_calls[0].name == "read_file"
+    assert resp.tool_calls[0].arguments == {"file_path": "a.py"}
