@@ -3,8 +3,8 @@
 
 import time
 
-from corecoder.memory import MemoryEntry, HybridRetriever
-from corecoder.tools.memory_tools import (
+from mycoder.memory import MemoryEntry, HybridRetriever
+from mycoder.tools.memory_tools import (
     MemoryConfirmTool,
     MemoryForgetTool,
     MemoryListTool,
@@ -27,7 +27,10 @@ def test_memory_search_returns_formatted_results(memory_store):
     out = tool.execute(query="认证模块")
     assert "相关记忆" in out
     assert "认证模块使用JWT" in out
-    assert "|fact|project|conf=" in out  # type/scope/confidence rendered
+    # P2 citation: results are numbered [n] with source anchor + type/conf
+    assert "[1]" in out
+    assert "|fact|conf=" in out
+    assert "用 [n] 标注来源" in out
 
 
 def test_memory_list_newest_first(memory_store):

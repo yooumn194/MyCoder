@@ -3,7 +3,7 @@ sensitive filtering (spec: 8 tests)."""
 
 import time
 
-from corecoder.memory import MemoryEntry, MemoryStore
+from mycoder.memory import MemoryEntry, MemoryStore
 
 
 def _save(store, content, **kw):

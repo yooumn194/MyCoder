@@ -3,8 +3,8 @@ filters (spec: 10 tests)."""
 
 import pytest
 
-from corecoder.memory import MemoryEntry
-from corecoder.memory.retriever import HybridRetriever
+from mycoder.memory import MemoryEntry
+from mycoder.memory.retriever import HybridRetriever
 
 
 def _save(memory_store, content, **kw):

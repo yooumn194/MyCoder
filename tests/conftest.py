@@ -1,6 +1,6 @@
 """Pytest bootstrap: isolate the test suite from the developer's environment.
 
-The repo may carry a local .env (gitignored) that sets CORECODER_MODEL and
+The repo may carry a local .env (gitignored) that sets MYCODER_MODEL and
 friends. Config.from_env() re-loads .env on every call (override=False), so a
 local .env would re-inject those values even after a test deletes the env var
 first. This autouse fixture neutralizes dotenv loading and pins the config env
@@ -11,16 +11,16 @@ vars, making the suite deterministic on any machine.
 
 import pytest
 
-import corecoder.config as config_mod
+import mycoder.config as config_mod
 
 _CONFIG_ENV_VARS = (
-    "CORECODER_MODEL",
-    "CORECODER_MAX_TOKENS",
-    "CORECODER_MAX_CONTEXT",
-    "CORECODER_TEMPERATURE",
-    "CORECODER_BASE_URL",
-    "CORECODER_API_KEY",
-    "CORECODER_PROVIDER",
+    "MYCODER_MODEL",
+    "MYCODER_MAX_TOKENS",
+    "MYCODER_MAX_CONTEXT",
+    "MYCODER_TEMPERATURE",
+    "MYCODER_BASE_URL",
+    "MYCODER_API_KEY",
+    "MYCODER_PROVIDER",
     "OPENAI_BASE_URL",
     "OPENAI_API_KEY",
     "DEEPSEEK_API_KEY",
@@ -41,11 +41,11 @@ def _isolate_environment(monkeypatch):
 def _reset_memory_state():
     """Phase 5: reset process-wide memory singletons and integration hooks so a
     test that installs hooks / builds a singleton store never leaks into the
-    next test (and never writes to the developer's real ~/.corecoder)."""
+    next test (and never writes to the developer's real ~/.mycoder)."""
     yield
-    from corecoder import planner
-    from corecoder.memory import reset_store
-    from corecoder.tools import correction
+    from mycoder import planner
+    from mycoder.memory import reset_store
+    from mycoder.tools import correction
 
     reset_store()
     planner._memory_injector = None  # noqa: SLF001
@@ -57,7 +57,7 @@ def _reset_memory_state():
 
 
 # ---------------------------------------------------------------------------
-# Phase 5 memory fixtures (tmp_path-backed; never touch ~/.corecoder)
+# Phase 5 memory fixtures (tmp_path-backed; never touch ~/.mycoder)
 # ---------------------------------------------------------------------------
 class _ControlledEmbedder:
     """Deterministic char+position embedder used by tests.
@@ -85,7 +85,7 @@ class _ControlledEmbedder:
 
 @pytest.fixture
 def memory_store(tmp_path):
-    from corecoder.memory import MemoryStore
+    from mycoder.memory import MemoryStore
 
     return MemoryStore(
         project_dir=tmp_path / "proj",
@@ -96,6 +96,6 @@ def memory_store(tmp_path):
 
 @pytest.fixture
 def memory_retriever(memory_store):
-    from corecoder.memory import HybridRetriever
+    from mycoder.memory import HybridRetriever
 
     return HybridRetriever(memory_store)

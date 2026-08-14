@@ -1,7 +1,7 @@
 """P2 SLO alerts (observability/alerts.py + LLMTracer wiring)."""
 
-from corecoder.observability.alerts import AlertManager, AlertRule, default_rules
-from corecoder.observability.trace import LLMTracer
+from mycoder.observability.alerts import AlertManager, AlertRule, default_rules
+from mycoder.observability.trace import LLMTracer
 
 
 def test_rule_breach_and_operators():
@@ -45,3 +45,36 @@ def test_tracer_fires_alert_after_failed_calls():
         pass
     # 1 success + 1 error -> success_rate 0.5 < 0.9 -> alert debounced/fired
     assert ("s1", "low_success_rate") in m._last_fired  # noqa: SLF001
+
+
+def test_ttft_recorded_from_first_on_token():
+    """TTFT: the first streamed token is timed from request start and lands in
+    the session summary (avg_ttft_ms / p95_ttft_ms)."""
+    import time
+
+    from mycoder.llm import LLMResponse, _traced
+
+    tracer = LLMTracer()
+    received: list[str] = []
+
+    class _Fake:
+        def __init__(self):
+            self._tracer = tracer
+            self.caller = "llm"
+            self.model = "fake-model"
+
+        @_traced
+        def chat(self, messages, on_token=None):
+            time.sleep(0.01)  # simulate network latency before first token
+            on_token("你")
+            on_token("好")
+            return LLMResponse(content="你好", prompt_tokens=5, completion_tokens=2)
+
+    _Fake().chat([{"role": "user", "content": "hi"}], on_token=received.append)
+
+    assert received == ["你", "好"]  # original callback still streamed through
+    s = tracer.get_session_summary("unknown")  # no session contextvar -> "unknown"
+    assert s["total_calls"] == 1
+    assert s["avg_ttft_ms"] > 0.0  # first-token latency was captured
+    assert s["p95_ttft_ms"] == s["avg_ttft_ms"]  # single call
+    assert s["avg_duration_ms"] >= s["avg_ttft_ms"]  # ttft <= full duration

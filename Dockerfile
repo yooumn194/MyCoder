@@ -1,6 +1,6 @@
-# CoreCoder API service image (referenced by docker-compose.yml `build: .`).
+# MyCoder API service image (referenced by docker-compose.yml `build: .`).
 #
-# corecoder's optional backends (jieba / fastembed / sqlite-vec / numpy) are all
+# mycoder's optional backends (jieba / fastembed / sqlite-vec / numpy) are all
 # lazily imported and degrade gracefully, so a slim base stays valid: the API
 # only needs the core package + the service-layer trio (fastapi/uvicorn/redis).
 
@@ -12,7 +12,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 COPY pyproject.toml README.md ./
-COPY corecoder/ corecoder/
+COPY mycoder/ mycoder/
 COPY config/ config/
 COPY api/ api/
 

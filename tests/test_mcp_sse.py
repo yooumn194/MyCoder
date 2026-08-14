@@ -6,15 +6,15 @@ import json
 import pytest
 from aiohttp import web
 
-from corecoder.mcp.errors import MCPToolError, MCPTransportError
-from corecoder.mcp.transport.sse import SSETransport
+from mycoder.mcp.errors import MCPToolError, MCPTransportError
+from mycoder.mcp.transport.sse import SSETransport
 
 
 def test_sse_deprecation_warning(monkeypatch):
     """P0-4: constructing the SSE transport emits a deprecation warning."""
     from unittest import mock
 
-    from corecoder.mcp.transport import sse as sse_mod
+    from mycoder.mcp.transport import sse as sse_mod
 
     logger = mock.Mock()
     monkeypatch.setattr(sse_mod, "logger", logger)
@@ -39,7 +39,7 @@ def test_sse_import_error_is_clear(monkeypatch):
     with pytest.raises(MCPTransportError) as exc:
         SSETransport(sse_endpoint="https://example.com/sse", name="x")
     assert "aiohttp" in str(exc.value)
-    assert "corecoder[mcp]" in str(exc.value)
+    assert "mycoder[mcp]" in str(exc.value)
 
 
 class FakeSSEServer:

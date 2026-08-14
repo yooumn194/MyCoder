@@ -1,8 +1,8 @@
 """Tests for Phase 4 LSP symbol intelligence (Module B)."""
 
-from corecoder.mcp.adapter import MCPToolAdapter
-from corecoder.mcp.lsp_compressor import LSPResultCompressor, enrich_diagnostic
-from corecoder.mcp.lsp_metadata import describe_lsp_tool
+from mycoder.mcp.adapter import MCPToolAdapter
+from mycoder.mcp.lsp_compressor import LSPResultCompressor, enrich_diagnostic
+from mycoder.mcp.lsp_metadata import describe_lsp_tool
 
 
 def _ref(uri, line):
@@ -106,7 +106,7 @@ def test_adapter_injects_lsp_metadata():
 
 
 def test_lsp_server_config_present():
-    from corecoder.mcp.config import load_mcp_config
+    from mycoder.mcp.config import load_mcp_config
 
     config = load_mcp_config()
     assert "lsp" in config["servers"]

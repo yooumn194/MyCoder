@@ -2,7 +2,7 @@
 
 import asyncio
 
-from corecoder.mcp.client import MCPClient
+from mycoder.mcp.client import MCPClient
 
 
 class _FakeTransport:
@@ -42,7 +42,7 @@ async def test_initialize_handshake():
     t = _FakeTransport()
     c = MCPClient(t, "fs")
     await c.initialize()
-    assert ("initialize", {"protocolVersion": "2024-11-05", "capabilities": {"roots": {"listChanged": True}}, "clientInfo": {"name": "corecoder", "version": "0.4.0"}}) in t.requests
+    assert ("initialize", {"protocolVersion": "2024-11-05", "capabilities": {"roots": {"listChanged": True}}, "clientInfo": {"name": "mycoder", "version": "0.4.0"}}) in t.requests
     assert "notifications/initialized" in t.notifications
     assert c.supports("resources/subscribe") is True
     assert c.supports("nope") is False

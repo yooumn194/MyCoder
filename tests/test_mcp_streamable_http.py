@@ -6,8 +6,8 @@ import json
 import pytest
 from aiohttp import web
 
-from corecoder.mcp.errors import MCPToolError
-from corecoder.mcp.transport.streamable_http import StreamableHTTPTransport
+from mycoder.mcp.errors import MCPToolError
+from mycoder.mcp.transport.streamable_http import StreamableHTTPTransport
 
 
 class _StreamServer:
@@ -136,7 +136,7 @@ async def test_streamable_http_http_error():
 
 def test_streamable_http_and_sse_coexist():
     """Backward compat: the SSE transport is untouched by this new option."""
-    from corecoder.mcp.transport import SSETransport, StreamableHTTPTransport, StdioTransport
+    from mycoder.mcp.transport import SSETransport, StreamableHTTPTransport, StdioTransport
 
     assert StreamableHTTPTransport is not None
     assert SSETransport is not None

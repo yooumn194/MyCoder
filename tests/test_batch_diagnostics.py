@@ -1,7 +1,7 @@
 """Tests for P1-2: batch diagnostics (3 writes -> 1 LSP diagnostics request)."""
 
-from corecoder.tools.batch_diagnostics import BatchDiagnostics
-from corecoder.tools.write import WriteFileTool
+from mycoder.tools.batch_diagnostics import BatchDiagnostics
+from mycoder.tools.write import WriteFileTool
 
 
 def test_batch_diagnostics_after_3_writes(tmp_path):

@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from corecoder.memory.embedder import (
+from mycoder.memory.embedder import (
     DEFAULT_MODEL,
     FastEmbedWrapper,
     HashingEmbedder,

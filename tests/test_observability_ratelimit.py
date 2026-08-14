@@ -1,6 +1,6 @@
 """P2 rate limiting: token bucket / leaky bucket / sliding window / facade."""
 
-from corecoder.observability.ratelimit import (
+from mycoder.observability.ratelimit import (
     LeakyBucket,
     RateLimiter,
     SlidingWindowCounter,
@@ -58,6 +58,6 @@ def test_rate_limiter_is_per_key():
 
 def test_rate_limiter_from_env(monkeypatch):
     assert RateLimiter.from_env() is None
-    monkeypatch.setenv("CORECODER_RATE_LIMIT", "5")
+    monkeypatch.setenv("MYCODER_RATE_LIMIT", "5")
     limiter = RateLimiter.from_env()
     assert limiter is not None and limiter.requests_per_minute == 5

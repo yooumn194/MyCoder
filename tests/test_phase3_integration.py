@@ -9,13 +9,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from corecoder import planner as planner_mod
-from corecoder.agent import Agent
-from corecoder.planner import PlanStore
-from corecoder.tools.grep_search import GrepSearchTool
-from corecoder.tools.read_file import ReadFileTool
-from corecoder.tools.todo_tools import TodoUpdateTool, TodoWriteTool
-from corecoder.tools.write import WriteFileTool
+from mycoder import planner as planner_mod
+from mycoder.agent import Agent
+from mycoder.planner import PlanStore
+from mycoder.tools.grep_search import GrepSearchTool
+from mycoder.tools.read_file import ReadFileTool
+from mycoder.tools.todo_tools import TodoUpdateTool, TodoWriteTool
+from mycoder.tools.write import WriteFileTool
 
 
 def _tc(name, **args):
@@ -56,7 +56,7 @@ def _agent(tmp_path):
 def test_search_plan_modify_verify(tmp_path, monkeypatch):
     """The full Phase 3 workflow, with plan discipline enforced."""
     _make_proj(tmp_path)
-    monkeypatch.setenv("CORECODER_ENFORCE_PLANNING", "1")
+    monkeypatch.setenv("MYCODER_ENFORCE_PLANNING", "1")
     agent = _agent(tmp_path)
 
     # 1. search to locate the function
@@ -94,7 +94,7 @@ def test_search_plan_modify_verify(tmp_path, monkeypatch):
 def test_open_ended_mode_preserves_phase12(monkeypatch, tmp_path):
     """No plan + enforcement off -> mutation runs (Phase 1/2 behaviour intact)."""
     _make_proj(tmp_path)
-    monkeypatch.delenv("CORECODER_ENFORCE_PLANNING", raising=False)
+    monkeypatch.delenv("MYCODER_ENFORCE_PLANNING", raising=False)
     agent = _agent(tmp_path)
 
     out = agent._exec_tool(_tc("write_file", file_path=str(tmp_path / "x.py"), content="print(1)\n"))

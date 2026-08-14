@@ -2,7 +2,7 @@
 
 import pytest
 
-from corecoder.planner import (
+from mycoder.planner import (
     PlanStore,
     PlanValidator,
     TaskPlan,
@@ -12,7 +12,7 @@ from corecoder.planner import (
     planning_guard,
     set_active_plan,
 )
-from corecoder.tools.todo_tools import TodoUpdateTool, TodoWriteTool
+from mycoder.tools.todo_tools import TodoUpdateTool, TodoWriteTool
 
 
 @pytest.fixture(autouse=True)
@@ -137,14 +137,14 @@ def test_guard_always_allows_exploration_and_planning():
 def test_guard_soft_mode_allows_mutation_without_plan(monkeypatch):
     """No plan + enforcement off -> open-ended execution (Phase 1/2 preserved)."""
     clear_active_plan()
-    monkeypatch.delenv("CORECODER_ENFORCE_PLANNING", raising=False)
+    monkeypatch.delenv("MYCODER_ENFORCE_PLANNING", raising=False)
     assert planning_guard("write_file") is None
     assert planning_guard("edit_file") is None
 
 
 def test_guard_hard_mode_blocks_mutation_without_plan(monkeypatch):
     clear_active_plan()
-    monkeypatch.setenv("CORECODER_ENFORCE_PLANNING", "1")
+    monkeypatch.setenv("MYCODER_ENFORCE_PLANNING", "1")
     msg = planning_guard("write_file")
     assert msg and "规划拦截" in msg
 
@@ -154,6 +154,21 @@ def test_guard_enforces_step_discipline():
     set_active_plan(TaskPlan(goal="g", items=[TodoItem(id="s1", description="d")]))
     assert planning_guard("write_file") is not None  # s1 still pending
 
-    plan = __import__("corecoder.planner", fromlist=["get_active_plan"]).get_active_plan()
+    plan = __import__("mycoder.planner", fromlist=["get_active_plan"]).get_active_plan()
     plan.items[0].status = TodoStatus.IN_PROGRESS
     assert planning_guard("write_file") is None  # in_progress -> allowed
+
+
+def test_guard_allows_readonly_mcp_tools():
+    """#15: read-only MCP queries (definition/references/hover) bypass plan
+    discipline; mutating mcp tools still obey it."""
+    set_active_plan(TaskPlan(goal="g", items=[TodoItem(id="s1", description="d")]))
+    try:
+        # LSP lookups are not mutations
+        assert planning_guard("mcp_lsp_definition") is None
+        assert planning_guard("mcp_lsp_references") is None
+        assert planning_guard("mcp_lsp_hover") is None
+        # a mutating mcp tool (write) is still blocked mid-plan
+        assert planning_guard("mcp_filesystem_write_file") is not None
+    finally:
+        set_active_plan(None)

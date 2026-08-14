@@ -2,14 +2,14 @@
 
 import pytest
 
-import corecoder.planner as planner_mod
-from corecoder.memory import MemoryEntry, HybridRetriever, MemoryStore
-from corecoder.memory.embedder import HashingEmbedder
-from corecoder.memory.integration import MemoryIntegration
-from corecoder.memory.prompt import MemoryPromptInjector
-from corecoder.planner import PlanStore
-from corecoder.tools.correction import run_with_correction
-from corecoder.tools.todo_tools import TodoWriteTool
+import mycoder.planner as planner_mod
+from mycoder.memory import MemoryEntry, HybridRetriever, MemoryStore
+from mycoder.memory.embedder import HashingEmbedder
+from mycoder.memory.integration import MemoryIntegration
+from mycoder.memory.prompt import MemoryPromptInjector
+from mycoder.planner import PlanStore
+from mycoder.tools.correction import run_with_correction
+from mycoder.tools.todo_tools import TodoWriteTool
 
 
 @pytest.fixture

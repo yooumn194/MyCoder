@@ -1,6 +1,6 @@
 """Tests for P0-1: subagent tool output contract validation."""
 
-from corecoder.agents.tool_validator import ToolOutputValidator
+from mycoder.agents.tool_validator import ToolOutputValidator
 
 
 def test_validator_passes_wellformed_grep():

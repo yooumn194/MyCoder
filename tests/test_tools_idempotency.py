@@ -4,11 +4,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from corecoder.agent import Agent
-from corecoder.llm import LLM
-from corecoder.tools.base import Tool
-from corecoder.tools.correction import run_with_correction
-from corecoder.tools.idempotency import IdempotencyStore
+from mycoder.agent import Agent
+from mycoder.llm import LLM
+from mycoder.tools.base import Tool
+from mycoder.tools.correction import run_with_correction
+from mycoder.tools.idempotency import IdempotencyStore
 
 
 def _tc(tool: Tool, arguments: dict):
@@ -98,3 +98,55 @@ def test_agent_never_caches_non_idempotent_tool():
     second = agent._exec_tool(_tc(tool, {}))
     assert first == "wrote-1" and second == "wrote-2"
     assert tool.calls == 2  # side-effecting tool always re-executes
+
+
+def test_idempotency_store_hit_rate():
+    """#40: cache hit/miss counters — the '缓存命中率' metric source."""
+    store = IdempotencyStore()
+    key = store.key("write_file", {"path": "a.txt"})
+    assert store.get(key) is None  # miss
+    store.put(key, "ok")
+    assert store.get(key) == "ok"  # hit
+    store.put(key, "ok")
+    assert store.get(key) == "ok"  # hit again
+    s = store.stats()
+    assert s["hits"] == 2
+    assert s["misses"] == 1
+    assert s["hit_rate"] == round(2 / 3, 4)
+    # clear resets counters too
+    store.clear()
+    assert store.stats()["total"] == 0
+
+
+def test_agent_tool_metrics_success_and_failure():
+    """Tool success / failure counters -> success_rate / failure_rate (面经)."""
+
+    class _OkTool(Tool):
+        name = "ok_tool"
+        idempotent = True
+        description = "ok"
+        parameters = {"type": "object", "properties": {}}
+
+        def execute(self, **kw):
+            return "fine"
+
+    class _ErrTool(Tool):
+        name = "err_tool"
+        idempotent = True
+        description = "err"
+        parameters = {"type": "object", "properties": {}}
+
+        def execute(self, **kw):
+            return "Error: boom"
+
+    agent = Agent(llm=LLM.__new__(LLM), tools=[_OkTool(), _ErrTool()])
+    agent._exec_tool(_tc(_OkTool(), {}))   # success
+    agent._exec_tool(_tc(_ErrTool(), {}))  # failure (Error-string return)
+
+    m = agent._tool_metrics()
+    assert m["calls"] == 2
+    assert m["successes"] == 1
+    assert m["failures"] == 1
+    assert m["success_rate"] == 0.5
+    assert m["failure_rate"] == 0.5
+    assert m["retries"] == 0

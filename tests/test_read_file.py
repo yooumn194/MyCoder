@@ -1,6 +1,6 @@
 """Tests for read_file — ranges, truncation, binary detection, path guarding."""
 
-from corecoder.tools.read_file import MAX_LINES, ReadFileTool
+from mycoder.tools.read_file import MAX_LINES, ReadFileTool
 
 
 def _tool(tmp_path):

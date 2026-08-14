@@ -44,12 +44,12 @@ jobs:
       # P1-1: evaluation benchmark — reports only, never blocks merges.
       - name: Run Phase 4 Evaluation
         run: |
-          python -m corecoder.eval.runner --benchmark orchestration --cases 20 \
+          python -m mycoder.eval.runner --benchmark orchestration --cases 20 \
             --report eval-report.json
         continue-on-error: true
 
       - name: Compile
-        run: python -m compileall -q corecoder tests
+        run: python -m compileall -q mycoder tests
 
   package:
     runs-on: ubuntu-latest
@@ -79,4 +79,4 @@ jobs:
         run: python -m pip install -U pip ruff
 
       - name: Ruff check
-        run: ruff check corecoder tests
+        run: ruff check mycoder tests

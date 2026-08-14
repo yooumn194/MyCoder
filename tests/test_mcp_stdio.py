@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-from corecoder.mcp.errors import MCPRemoteError, MCPToolError
-from corecoder.mcp.transport.stdio import StdioTransport
+from mycoder.mcp.errors import MCPRemoteError, MCPToolError
+from mycoder.mcp.transport.stdio import StdioTransport
 
 from .mcp_helpers import write_fake_server
 
@@ -47,7 +47,7 @@ async def test_lsp_warmup_timeout_graceful(tmp_path):
 
 
 def test_lsp_config_has_warmup_flag():
-    from corecoder.mcp.config import load_mcp_config
+    from mycoder.mcp.config import load_mcp_config
 
     config = load_mcp_config()
     lsp = config["servers"]["lsp"]

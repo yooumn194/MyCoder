@@ -9,9 +9,9 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from corecoder import mcp as mcp_pkg
-from corecoder.mcp import registry as registry_mod
-from corecoder.mcp import runtime as runtime_mod
+from mycoder import mcp as mcp_pkg
+from mycoder.mcp import registry as registry_mod
+from mycoder.mcp import runtime as runtime_mod
 
 from .mcp_helpers import write_fake_server
 
@@ -102,7 +102,7 @@ def test_crashing_server_does_not_block_startup(tmp_path):
 
 
 def test_agent_dispatches_mcp_tool(tmp_path):
-    from corecoder.agent import Agent
+    from mycoder.agent import Agent
 
     fake = write_fake_server(tmp_path)
     config = _write_config(tmp_path, _stdio_server(fake), allowed=["echo"])
@@ -114,12 +114,65 @@ def test_agent_dispatches_mcp_tool(tmp_path):
     assert r == "echo:agent-hi"
 
 
+# --- P0 严重修复回归 --------------------------------------------------------
+
+def test_make_transport_streamable_http():
+    """streamable_http 配置现在能加载（此前 loader 只认 stdio/sse）。"""
+    from mycoder.mcp.registry import _make_transport
+    from mycoder.mcp.transport.streamable_http import StreamableHTTPTransport
+
+    t = _make_transport(
+        {"transport": "streamable_http", "endpoint": "https://mcp.example.com/sse", "name": "s"}
+    )
+    assert isinstance(t, StreamableHTTPTransport)
+    with pytest.raises(Exception):
+        _make_transport({"transport": "streamable_http"})  # 缺 endpoint
+
+
+def test_param_validator_blocks_unsafe_value():
+    """param_validators 在调用前拦截不安全参数（此前是死代码）。"""
+    from mycoder.mcp.adapter import MCPToolAdapter
+    from mycoder.mcp.errors import MCPToolError
+    from mycoder.mcp.security import MCPSecurityPolicy
+
+    security = MCPSecurityPolicy(
+        {
+            "security": {
+                "allowed_tools": {"fs": ["read_file"]},
+                "param_validators": {"fs.read_file.path": r"^/workspace/.*"},
+            }
+        }
+    )
+    adapter = MCPToolAdapter(
+        SimpleNamespace(),
+        "fs",
+        {"name": "read_file", "description": "read", "inputSchema": {"type": "object", "properties": {}}},
+        security=security,
+    )
+    with pytest.raises(MCPToolError) as ei:
+        adapter.execute(path="../etc/passwd")
+    assert "不匹配安全策略" in ei.value.message
+
+
+def test_fail_strategy_block_propagates(tmp_path):
+    """fail_strategy=block 的 server 发现失败必须阻断启动（此前被吞掉）。"""
+    from mycoder.mcp.errors import MCPStartupError
+
+    script = tmp_path / "hanging.py"
+    script.write_text(HANGING_SERVER, encoding="utf-8")
+    config = _write_config(
+        tmp_path, _stdio_server(str(script)), allowed=["echo"], timeout=0.3, fail_strategy="block"
+    )
+    with pytest.raises(MCPStartupError):
+        mcp_pkg.load_mcp_tools(config)
+
+
 # --- 3.5.2: startup discovery hint -----------------------------------------
 
 def _patched_logger(monkeypatch):
     from unittest import mock
 
-    from corecoder.mcp import registry as reg
+    from mycoder.mcp import registry as reg
 
     logger = mock.Mock()
     monkeypatch.setattr(reg, "logger", logger)

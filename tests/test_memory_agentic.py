@@ -1,7 +1,7 @@
 """P1 Agentic RAG (memory/agentic.py) — retrieve, judge, refine or stop."""
 
-from corecoder.memory import MemoryEntry, MemoryStore, HybridRetriever
-from corecoder.memory.agentic import (
+from mycoder.memory import MemoryEntry, MemoryStore, HybridRetriever
+from mycoder.memory.agentic import (
     AgenticRetriever,
     BroadeningRefiner,
     RuleSufficiencyEvaluator,

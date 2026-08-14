@@ -26,7 +26,7 @@ import json
 import re
 from typing import Any
 
-from corecoder.config import Config
+from mycoder.config import Config
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
@@ -93,7 +93,7 @@ def _resolve_llm():
     cfg = Config.from_env()
     if not cfg.api_key:
         return None
-    from corecoder.llm import LLM
+    from mycoder.llm import LLM
 
     return LLM(
         model=cfg.model,

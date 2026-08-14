@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from corecoder.tools.correction import CorrectionStrategy, ErrorClassifier
-from corecoder.tools.mcp_lite import MCPClientLite, MCPToolError
+from mycoder.tools.correction import CorrectionStrategy, ErrorClassifier
+from mycoder.tools.mcp_lite import MCPClientLite, MCPToolError
 
 
 class _NeverResponds:

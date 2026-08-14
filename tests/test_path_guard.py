@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from corecoder.tools.path_guard import PathGuard, PathTraversalError
+from mycoder.tools.path_guard import PathGuard, PathTraversalError
 
 
 def test_parent_traversal_rejected(tmp_path):

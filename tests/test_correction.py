@@ -2,7 +2,7 @@
 
 import pytest
 
-from corecoder.tools.correction import (
+from mycoder.tools.correction import (
     CorrectionStrategy,
     ErrorClassifier,
     FatalToolError,
@@ -50,7 +50,7 @@ def test_classify_unknown_defaults_to_upgrade():
 
 
 def test_classify_sandbox_oom_fail_fast():
-    from corecoder.sandbox import SandboxResourceExhausted
+    from mycoder.sandbox import SandboxResourceExhausted
 
     strategy, _ = ErrorClassifier.classify(
         SandboxResourceExhausted("container was OOM-killed 3 times")
@@ -60,7 +60,7 @@ def test_classify_sandbox_oom_fail_fast():
 
 def test_classify_mcp_error_types():
     """Every MCP error_type maps to the correct correction strategy."""
-    from corecoder.mcp.errors import MCPToolError
+    from mycoder.mcp.errors import MCPToolError
 
     cases = {
         "MCPInvalidRequest": CorrectionStrategy.ESCALATE_USER,
@@ -111,7 +111,7 @@ def test_retry_modified_extends_timeout():
 
 def test_retry_modified_timeout_is_capped():
     """Exponential timeout growth must never exceed MAX_RETRY_TIMEOUT."""
-    from corecoder.tools.correction import MAX_RETRY_TIMEOUT
+    from mycoder.tools.correction import MAX_RETRY_TIMEOUT
 
     seen = []
 
@@ -147,7 +147,7 @@ def test_permission_error_escalates_to_user():
 
 
 def test_oom_fails_fast():
-    from corecoder.sandbox import SandboxResourceExhausted
+    from mycoder.sandbox import SandboxResourceExhausted
 
     def _oom():
         raise SandboxResourceExhausted("OOM")
@@ -165,3 +165,23 @@ def test_alt_method_surfaces_to_agent():
 
     with pytest.raises(FileNotFoundError):
         run_with_correction(_missing, sleep_fn=lambda _: None)
+
+
+def test_on_retry_callback_counts_retries():
+    """on_retry fires once per actual retry, with the chosen strategy."""
+    calls = []
+    retries = []
+
+    def _flaky(x):
+        calls.append(x)
+        if len(calls) < 3:
+            raise ConnectionResetError("transient")
+        return "ok"
+
+    result = run_with_correction(
+        _flaky, x=1, sleep_fn=lambda _: None,
+        on_retry=lambda s: retries.append(s),
+    )
+    assert result == "ok"
+    assert len(retries) == 2  # two retries
+    assert all(s == CorrectionStrategy.RETRY_SAME for s in retries)

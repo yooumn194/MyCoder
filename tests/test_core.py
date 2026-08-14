@@ -1,10 +1,10 @@
 """Tests for core modules: config, context, session, imports."""
 
-from corecoder import Agent, LLM, Config, ALL_TOOLS, __version__
-from corecoder import session as session_module
-from corecoder.context import ContextManager, estimate_tokens
-from corecoder.session import save_session, load_session, list_sessions
-from corecoder.tools import get_tool
+from mycoder import Agent, LLM, Config, ALL_TOOLS, __version__
+from mycoder import session as session_module
+from mycoder.context import ContextManager, estimate_tokens
+from mycoder.session import save_session, load_session, list_sessions
+from mycoder.tools import get_tool
 
 
 def test_version():
@@ -45,15 +45,15 @@ def test_public_api_exports():
 
 
 def test_config_from_env(monkeypatch):
-    monkeypatch.setenv("CORECODER_MODEL", "test-model")
+    monkeypatch.setenv("MYCODER_MODEL", "test-model")
     c = Config.from_env()
     assert c.model == "test-model"
 
 
 def test_config_defaults(monkeypatch):
     # clear relevant env vars without leaking the change into other tests
-    monkeypatch.delenv("CORECODER_MODEL", raising=False)
-    monkeypatch.delenv("CORECODER_MAX_TOKENS", raising=False)
+    monkeypatch.delenv("MYCODER_MODEL", raising=False)
+    monkeypatch.delenv("MYCODER_MAX_TOKENS", raising=False)
 
     c = Config.from_env()
     assert c.model == "gpt-5.5"
@@ -157,7 +157,7 @@ def test_list_sessions():
 # --- Cost estimation ---
 
 def test_cost_estimation_known_model():
-    from corecoder.llm import LLM
+    from mycoder.llm import LLM
     llm = LLM.__new__(LLM)
     llm.model = "gpt-5.4"
     llm.total_prompt_tokens = 1_000_000
@@ -167,7 +167,7 @@ def test_cost_estimation_known_model():
     assert cost == 2.5 + 7.5  # $2.5/M in + $15/M out * 0.5M
 
 def test_cost_estimation_unknown_model():
-    from corecoder.llm import LLM
+    from mycoder.llm import LLM
     llm = LLM.__new__(LLM)
     llm.model = "some-custom-model"
     llm.total_prompt_tokens = 1000
@@ -178,7 +178,7 @@ def test_cost_estimation_unknown_model():
 # --- Changed files tracking ---
 
 def test_edit_tracks_changed_files(tmp_path):
-    from corecoder.tools.edit import _changed_files
+    from mycoder.tools.edit import _changed_files
     _changed_files.clear()
     edit = get_tool("edit_file")
     path = tmp_path / "sample.py"
@@ -189,7 +189,7 @@ def test_edit_tracks_changed_files(tmp_path):
 
 
 def test_write_tracks_changed_files(tmp_path):
-    from corecoder.tools.edit import _changed_files
+    from mycoder.tools.edit import _changed_files
     _changed_files.clear()
     write = get_tool("write_file")
     path = tmp_path / "tracked.txt"
@@ -216,7 +216,7 @@ def test_agent_tool_scope_is_per_instance():
 
 def test_exec_tool_distinguishes_bad_args_from_internal_error():
     """A TypeError raised inside a tool must not be reported as bad arguments."""
-    from corecoder.tools.base import Tool
+    from mycoder.tools.base import Tool
 
     class _Boom(Tool):
         name = "boom"
@@ -256,3 +256,17 @@ def test_interrupt_backfills_missing_tool_replies():
     ids = [m["tool_call_id"] for m in replies]
     assert sorted(ids) == ["a", "b"]
     assert ids.count("a") == 1  # the already-answered call wasn't duplicated
+
+
+def test_compression_stats_accounts_saved_tokens():
+    """P1: compression accounting — tokens saved / avg compression ratio."""
+    from mycoder.context import ContextManager
+
+    ctx = ContextManager(max_tokens=2000)
+    msgs = [{"role": "user", "content": f"m{i} " + "a" * 300} for i in range(20)]
+    assert ctx.maybe_compress(msgs, None)  # summarization fired
+    s = ctx.compression_stats()
+    assert s["compressions"] == 1
+    assert s["tokens_before"] > s["tokens_after"]
+    assert s["tokens_saved"] > 0
+    assert s["avg_compression_ratio"] > 0.0

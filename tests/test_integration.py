@@ -7,10 +7,10 @@ a slow search or a traversal attempt.
 
 import subprocess
 
-from corecoder.tools import grep_search as gs
-from corecoder.tools.grep_search import GrepSearchTool
-from corecoder.tools.list_files import ListFilesTool
-from corecoder.tools.read_file import ReadFileTool
+from mycoder.tools import grep_search as gs
+from mycoder.tools.grep_search import GrepSearchTool
+from mycoder.tools.list_files import ListFilesTool
+from mycoder.tools.read_file import ReadFileTool
 
 
 def _make_proj(tmp_path):

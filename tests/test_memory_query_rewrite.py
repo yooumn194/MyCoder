@@ -1,7 +1,7 @@
 """P0 multi-turn query rewriting (memory/query_rewrite.py + retriever hook)."""
 
-from corecoder.memory import MemoryEntry, MemoryStore, HybridRetriever
-from corecoder.memory.query_rewrite import (
+from mycoder.memory import MemoryEntry, MemoryStore, HybridRetriever
+from mycoder.memory.query_rewrite import (
     IdentityQueryRewriter,
     LLMQueryRewriter,
 )

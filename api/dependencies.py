@@ -20,13 +20,13 @@ from collections.abc import Callable
 
 from fastapi import Depends
 
-from corecoder.agents.blackboard import Blackboard
-from corecoder.agents.orchestrator import Orchestrator
-from corecoder.agents.planner import TaskPlanner
-from corecoder.config import Config
-from corecoder.observability.budget import TokenBudgetGuard
-from corecoder.observability.trace import LLMTracer
-from corecoder.tools import ALL_TOOLS
+from mycoder.agents.blackboard import Blackboard
+from mycoder.agents.orchestrator import Orchestrator
+from mycoder.agents.planner import TaskPlanner
+from mycoder.config import Config
+from mycoder.observability.budget import TokenBudgetGuard
+from mycoder.observability.trace import LLMTracer
+from mycoder.tools import ALL_TOOLS
 
 from .state_backend import StateBackend, create_state_backend
 
@@ -105,7 +105,7 @@ def get_default_llm():
     cfg = Config.from_env()
     if not cfg.api_key:
         return None
-    from corecoder.llm import LLM
+    from mycoder.llm import LLM
 
     _llm = LLM(
         model=cfg.model,
@@ -131,6 +131,9 @@ def get_orchestrator(
     def _build(
         session_id: str, *, llm=None, tools=None, budget_guard: TokenBudgetGuard | None = None
     ) -> Orchestrator:
+        from mycoder.memory.experience import remember_replan
+        from mycoder.model_router import build_model_factory
+
         blackboard = PersistentBlackboard(state_backend, session_id)
         llm = llm if llm is not None else get_default_llm()
         return Orchestrator(
@@ -142,6 +145,13 @@ def get_orchestrator(
             planner=TaskPlanner(llm=llm),
             # Token-budget enforcement; None = no budget (backward compatible).
             budget_guard=budget_guard,
+            # P2 model-tier routing (cost): sub-agents get a tier-appropriate
+            # model per config/model_routing.yaml instead of the shared LLM.
+            model_factory=build_model_factory(llm),
+            # P1 re-planning experience: deviation playbooks persist to the
+            # memory DB (best-effort; no memory backend -> no-op) so API
+            # sub-agent recovery lessons are reusable across sessions.
+            experience_store=remember_replan,
         )
 
     return _build

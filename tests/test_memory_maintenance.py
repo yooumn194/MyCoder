@@ -2,8 +2,8 @@
 
 import time
 
-from corecoder.memory import MemoryEntry
-from corecoder.memory.maintenance import MemoryMaintainer
+from mycoder.memory import MemoryEntry
+from mycoder.memory.maintenance import MemoryMaintainer
 
 
 def _save(memory_store, content, **kw):

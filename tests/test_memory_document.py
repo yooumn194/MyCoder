@@ -1,9 +1,9 @@
 """Document-level RAG layer: semantic chunking, incremental reindex, and
-rule-based rerank (corecoder/memory/document.py + retriever.RuleReranker)."""
+rule-based rerank (mycoder/memory/document.py + retriever.RuleReranker)."""
 
-from corecoder.memory import MemoryEntry, MemoryStore, HybridRetriever
-from corecoder.memory.document import chunk_document, reindex_document, save_document
-from corecoder.memory.retriever import Reranker, RuleReranker
+from mycoder.memory import MemoryEntry, MemoryStore, HybridRetriever
+from mycoder.memory.document import chunk_document, reindex_document, save_document
+from mycoder.memory.retriever import Reranker, RuleReranker
 
 MARKDOWN = """\
 # Intro

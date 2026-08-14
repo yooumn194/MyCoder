@@ -1,4 +1,4 @@
-"""Load test for the CoreCoder HTTP API (P2, 压测).
+"""Load test for the MyCoder HTTP API (P2, 压测).
 
 Drives POST /v1/agent/run under concurrency, polls /status to a terminal state,
 and aggregates QPS / p95 latency / success rate / token usage.

@@ -1,11 +1,11 @@
 """Phase 5 integration: planning_guard injection, Self-Correction pattern
 settlement, plan.json decision distillation, token budget (spec: 4 tests)."""
 
-import corecoder.planner as planner_mod
-from corecoder.memory import MemoryEntry
-from corecoder.memory.integration import MemoryIntegration
-from corecoder.memory.prompt import MemoryPromptInjector
-from corecoder.planner import (
+import mycoder.planner as planner_mod
+from mycoder.memory import MemoryEntry
+from mycoder.memory.integration import MemoryIntegration
+from mycoder.memory.prompt import MemoryPromptInjector
+from mycoder.planner import (
     PlanStore,
     TaskPlan,
     TodoItem,
@@ -13,8 +13,8 @@ from corecoder.planner import (
     get_pending_memory_section,
     set_active_plan,
 )
-from corecoder.tools.correction import run_with_correction
-from corecoder.tools.todo_tools import TodoUpdateTool, TodoWriteTool
+from mycoder.tools.correction import run_with_correction
+from mycoder.tools.todo_tools import TodoUpdateTool, TodoWriteTool
 
 
 def test_planning_guard_injects_memory_into_todo_write(
@@ -87,7 +87,7 @@ def test_plan_completion_settles_decision(memory_store, memory_retriever, tmp_pa
 
 def test_injector_respects_token_budget(tmp_path):
     # BM25-only store (embedder=None): 20 distinct memories, no vector dedup
-    from corecoder.memory import HybridRetriever, MemoryStore
+    from mycoder.memory import HybridRetriever, MemoryStore
 
     store = MemoryStore(
         project_dir=tmp_path / "proj", global_dir=tmp_path / "glob", embedder=None
@@ -114,7 +114,7 @@ def test_settlement_failures_never_break_tools():
         def save(self, *a, **k):
             raise RuntimeError("disk full")
 
-    from corecoder.memory.integration import MemoryIntegration
+    from mycoder.memory.integration import MemoryIntegration
 
     MemoryIntegration(store=_BrokenStore(), retriever=object()).install()
 

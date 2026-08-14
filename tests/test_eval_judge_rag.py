@@ -1,7 +1,7 @@
 """P2 LLM-as-Judge + RAG eval + document parent-child index."""
 
-from corecoder.memory import HybridRetriever, MemoryStore
-from corecoder.memory.document import retrieve_parents, save_document
+from mycoder.memory import HybridRetriever, MemoryStore
+from mycoder.memory.document import retrieve_parents, save_document
 from eval_bench.judge import LLMJudge
 from eval_bench.rag_eval import SAMPLE_DOC, SAMPLE_QUERIES, evaluate
 
@@ -41,6 +41,43 @@ def test_judge_falls_back_on_bad_output():
 
 def test_judge_without_llm_returns_neutral():
     assert LLMJudge(llm=None).judge("q", "a")["score"] == 0.5
+
+
+# ------------------------------------------------------------ judge_run eval
+def test_judge_run_reports_distribution():
+    """judge_run.evaluate aggregates per-case scores into a quality report."""
+    from eval_bench.judge_run import SAMPLE_QA, evaluate
+
+    class _SeqStub:
+        """LLMJudge calls self._llm.chat(...); emit one score JSON per call."""
+
+        def __init__(self, scores):
+            self._contents = [
+                f'{{"score": {s}, "reasoning": "stub"}}' for s in scores
+            ]
+
+        def chat(self, messages, response_format=None):
+            return _Resp(self._contents.pop(0))
+
+    report = evaluate(SAMPLE_QA, judge=LLMJudge(llm=_SeqStub([1.0, 0.5, 0.0])))
+    assert report["total"] == len(SAMPLE_QA)
+    assert report["correct"] == 1
+    assert report["partial"] == 1
+    assert report["wrong"] == 1
+    assert report["judge_available"] is True
+    # 0.0 < 0.5 default threshold -> one low-score 回流 case
+    assert len(report["low_score_cases"]) == 1
+    assert report["low_score_cases"][0]["score"] == 0.0
+
+
+def test_judge_run_without_llm_all_neutral():
+    """No judge LLM -> neutral 0.5s and judge_available=False (never crashes)."""
+    from eval_bench.judge_run import SAMPLE_QA, evaluate
+
+    report = evaluate(SAMPLE_QA, judge=LLMJudge(llm=None))
+    assert report["judge_available"] is False
+    assert all(r["score"] == 0.5 for r in report["per_case"])
+    assert report["low_score_cases"] == []  # 0.5 not < 0.5
 
 
 # ------------------------------------------------------------ RAG eval

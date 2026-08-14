@@ -3,7 +3,7 @@
 Skipped entirely when the docker SDK or daemon is unavailable, or when the
 sandbox image has not been built:
 
-    docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/
+    docker build -t mycoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/
 
 Each test verifies a concrete security property of the container (non-root,
 read-only root, no network, resource limits, timeout self-heal, clean
@@ -12,19 +12,20 @@ teardown) — the properties that a regex blacklist could never provide.
 
 import asyncio
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
 
-from corecoder.sandbox import (
+from mycoder.sandbox import (
     ConfirmPolicy,
     DockerSandbox,
     SandboxManager,
     SandboxResourceExhausted,
 )
-from corecoder.tools import get_tool
+from mycoder.tools import get_tool
 
-IMAGE = "corecoder-sandbox:3.12"
+IMAGE = "mycoder-sandbox:3.12"
 
 
 def _docker_usable() -> bool:
@@ -82,7 +83,7 @@ async def sandbox(tmp_path_factory):
     if not _image_built():
         pytest.skip(
             f"image {IMAGE!r} not built; run: "
-            "docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/"
+            "docker build -t mycoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/"
         )
     sbx = DockerSandbox(project_dir=_make_repo(tmp_path_factory))
     await sbx.start()
@@ -217,7 +218,7 @@ async def test_sandbox_exec_sync_then_host_read(tmp_path_factory):
     Also proves execute_in_sandbox reports changed files instead of copying
     them out, and that read_file maps /workspace/... onto the host dir.
     """
-    import corecoder.tools.sandbox_tool as st
+    import mycoder.tools.sandbox_tool as st
 
     repo = _make_repo(tmp_path_factory)
     manager = SandboxManager(
@@ -249,7 +250,7 @@ async def test_sandbox_exec_sync_then_host_read(tmp_path_factory):
 
 async def test_execute_reports_changed_files_and_delete_hint(tmp_path_factory):
     """A deletion-class command carries a clean=True hint in the output."""
-    import corecoder.tools.sandbox_tool as st
+    import mycoder.tools.sandbox_tool as st
 
     repo = _make_repo(tmp_path_factory)
     manager = SandboxManager(
@@ -289,3 +290,36 @@ async def test_stop_removes_container_and_volume(tmp_path_factory):
     except docker.errors.NotFound:
         pass
     client.close()
+
+
+# --- idle auto-reaping -----------------------------------------------------
+
+async def test_idle_timeout_reaps_container_and_restarts(tmp_path_factory):
+    """A real container stops itself after idle_timeout; the next execute()
+    restarts it on the SAME volume — agent work written before the idle gap
+    survives (auto-close must not discard unsynced changes)."""
+    if not _image_built():
+        pytest.skip(
+            f"image {IMAGE!r} not built; run: "
+            "docker build -t mycoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/"
+        )
+    sbx = DockerSandbox(project_dir=_make_repo(tmp_path_factory), idle_timeout=2)
+    await sbx.start()
+    try:
+        await sbx.execute("echo keep-me > /workspace/keep.txt")
+        first_cid = sbx._container.id
+
+        # go idle long enough to be reaped; poll so timing jitter is absorbed
+        deadline = time.monotonic() + 8
+        while sbx._container is not None and time.monotonic() < deadline:
+            await asyncio.sleep(0.3)
+        assert sbx._container is None, "container was not reaped within 8s"
+        assert sbx._started is False
+
+        # next execute restarts transparently on the same volume
+        r = await sbx.execute("cat /workspace/keep.txt")
+        assert r.ok
+        assert "keep-me" in r.stdout
+        assert sbx._container.id != first_cid  # a fresh container, same volume
+    finally:
+        await sbx.stop()

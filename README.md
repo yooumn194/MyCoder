@@ -1,472 +1,375 @@
 <div align="center">
 
-# CoreCoder
+# MyCoder
 
-**The nanoGPT of coding agents. The main loop is still ~40 lines; the Phase 1–5 production shape around it is ~10,400 lines of Python across 86 files — understand how a coding agent actually works, then fork your own.**
+**编程 agent 里的 nanoGPT。主循环仍是约 40 行；Phase 1–5 在它外面铺成的生产级形态是 86 个文件、约 10,400 行 Python——读懂一个 coding agent 到底怎么运作，再 fork 出你自己的。**
 
 *learn from it · fork it · ship something better*
 
-[中文](README_CN.md) | English | [Source-reading series · 8 bilingual essays](article/00-index_EN.md)
+中文 | [English](README.md) | [配套源码导读 · 八篇双语](article/)
 
-[![PyPI](https://img.shields.io/pypi/v/corecoder)](https://pypi.org/project/corecoder/)
+[![PyPI](https://img.shields.io/pypi/v/mycoder)](https://pypi.org/project/mycoder/)
 [![Python](https://img.shields.io/badge/python-3.11+-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://github.com/he-yufeng/CoreCoder/actions/workflows/ci.yml/badge.svg)](https://github.com/he-yufeng/CoreCoder/actions)
-[![engine](https://img.shields.io/badge/engine-~10.4k_LoC-blue)](article/00-index_EN.md)
-[![essays](https://img.shields.io/badge/source--reading-8_bilingual-orange)](article/00-index_EN.md)
+[![Tests](https://github.com/he-yufeng/MyCoder/actions/workflows/ci.yml/badge.svg)](https://github.com/he-yufeng/MyCoder/actions)
+[![engine](https://img.shields.io/badge/engine-~10.4k_LoC-blue)](article/)
+[![源码导读](https://img.shields.io/badge/源码导读-8篇双语-orange)](article/)
 
 </div>
 
-- **Readable end to end.** Every subsystem is plain Python you can follow — sandbox, MCP, multi-agent, memory — with no magic hidden anywhere you can't trace.
-- **Hackable.** Set a breakpoint on any line, change it, rerun, all on your own machine. It genuinely works, which makes this a living reference rather than a diagram.
-- **The gaps are the point.** It deliberately keeps only the minimal core; what's missing isn't half-finished, it's where you branch off and make it your own.
+- **读得完。** 每个子系统都是能一路跟到底的纯 Python——沙箱、MCP、多 Agent、记忆，没有一处藏着你看不懂的魔法。
+- **改得动。** 每一行都能在你自己机器上下断点、改了再跑。它真能干活，所以这份参考是活的，不是示意图。
+- **留白即起点。** 刻意只留最小核心，没做的那些不是半成品，是留给你 fork 出更好东西的地方。
 
-## How it compares
+## 和谁比
 
-| | CoreCoder | Claude Code | aider | nanoGPT |
+| | MyCoder | Claude Code | aider | nanoGPT |
 |---|---|---|---|---|
-| Lines of code | ~3,600 engine / ~10,400 total | hundreds of thousands (closed) | tens of thousands of Python | ~600 (two files) |
-| Time to read it all | one afternoon | can't (closed) | a few days of slogging | one afternoon |
-| Breakpoint, change, rerun? | yes, every line | no | yes, but there's a lot | yes |
-| What it's for | understand one, then fork your own | production coding assistant | terminal pair-programming | minimal GPT for teaching |
+| 代码量 | 引擎约 3,600 行 / 整包约 10,400 行 | 几十万行（闭源） | 数万行 Python | 约 600 行（两个文件） |
+| 读完要多久 | 一个下午 | 读不了（闭源） | 得啃几天 | 一个下午 |
+| 能不能下断点改了再跑 | 能，每一行 | 不能 | 能，但量大 | 能 |
+| 定位 | 读懂并 fork 出你自己的 agent | 生产级编程助手 | 终端结对编程 | 教学用最小 GPT |
 
-The nanoGPT column is there as a reference point: minimal, readable, but it teaches you to train a GPT. CoreCoder is after the same thing, only the subject is an agent that actually edits code. Sitting it next to Claude Code and aider isn't about competing for their users. CoreCoder is the foundation you stand on while you learn from them and get going; it isn't in the same race.
+nanoGPT 那一列是拿来对照的：它最小、可读，但教的是训一个 GPT。MyCoder 想干的是同一件事，只是把对象换成一个能真正改代码的 agent。和 Claude Code、aider 摆在一起，不是要跟它们抢用户，MyCoder 是借它们来学、来起步的那块地基，根本不在一个赛道。
 
-## What this is
+## 这是什么
 
-I've always felt coding agents get talked about as if they were arcane. Strip a tool like Claude Code or Cursor all the way down and the core is a `while` loop wrapped around a large model, plus a handful of tools that let it actually do things. The hard part was never the loop; it's everything the loop has to cope with once it meets the real world. CoreCoder is the version that writes that core out honestly, then lets Phases 1–5 grow real-world plumbing around it without hiding any of it.
+我一直觉得 coding agent 被讲得太玄了。把 Claude Code、Cursor 这类工具扒到底，核心是一个 while 循环套着一个大模型，外加一小组让它能真正动手的工具。难的从来不是这个循环，而是循环跑进真实世界以后要兜的那些底。MyCoder 就是把这个核心老老实实写出来的版本，再用 Phase 1–5 在它外面长出一层真实世界的管道，且每一层都不藏着掖着。
 
-The core loop (agent, model interface, context, sessions, planning, the tool files) is ~3,600 lines once you drop blank lines and comments — the main loop itself is still about 40. Counting everything Phases 1–5 added — the Docker sandbox, the MCP client, multi-agent orchestration, the result contract, evaluation, and the hybrid-retrieval memory system — the whole package is 86 files: ~10,400 physical lines, 8,502 net, every subsystem still plain Python you can read in a sitting.
+核心循环（agent、模型接口、上下文、会话、规划、工具文件）去掉空行和注释约 3,600 行——主循环本身仍是约 40 行。把 Phase 1–5 加进来的东西全算上——Docker 沙箱、MCP 客户端、多 Agent 编排、结果契约、评测体系、混合检索记忆——整个包是 86 个文件、物理约 10,400 行、净 8,502 行，每个子系统依旧是能一口气读完的纯 Python。
 
-And it really runs: reads and writes files, executes shell in a hardened sandbox, speaks MCP, spawns sub-agents, keeps cross-session memory, compacts context in three tiers, and tells you the tokens and dollars a run burned whenever you ask. 447 tests, all green (445 run + 2 container integration tests that skip themselves when Docker is unavailable). But the point of it running isn't to become your daily driver. It runs so the walkthrough can't lie: a reference that shows how an agent works has to actually work.
+它真能跑：读写文件、在加固沙箱里执行 shell、讲 MCP、派子 agent、维护跨会话记忆、分三层压上下文，还能随时把这趟烧掉的 token 和美元数报给你，447 个测试是绿的（445 个跑 + 2 个容器集成测试在 Docker 不可用时自动跳过）。但能跑不是为了劝你拿去日用，而是为了让这份「注释」不撒谎：一个解释 agent 怎么运作的范例，自己得真能运作。
 
-The code came out of a public teardown: open analyses have already exposed a lot of the load-bearing architecture inside production agents like Claude Code. I took the most essential layer and rewrote it honestly, in as little code as I could. So reading CoreCoder is roughly like reading a runnable, annotated take on how that kind of agent works, except it's only a minimal reimplementation, sitting right there on your machine for you to take apart and change.
+代码来自一次公开拆解。公开的源码分析里，Claude Code 这类生产级 agent 暴露出不少关键架构，我挑出最核心的一层，用尽量少的代码诚实地复写了一遍。所以读 MyCoder，约等于读一份基于公开源码分析的「可运行注释版」：讲的是这类 agent 的核心思路，而它本身只是最小复写，就摆在你机器上，随你拆、随你改。
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/he-yufeng/CoreCoder/main/assets/demo_en.png" width="760"
-       alt="A real CoreCoder run: corecoder -p asks it to fix buggy.py; the agent reads the file, edits the code, runs it to confirm, and reports what it changed.">
+  <img src="assets/demo.png" width="820"
+       alt="MyCoder 一次真实运行：mycoder -p 让它修 buggy.py，agent 自己读文件、改代码、跑验证、给出结论">
 </p>
 
-<p align="center"><sub><i>These thousand lines really do run a full loop end to end: ask it to fix buggy.py and it reads the file, edits the code, runs it once to confirm, then reports back on its own. Watch it, then come back and read the code.</i></sub></p>
+<p align="center"><sub><i>这一千行真能跑通一个完整回合：让它修 buggy.py，它自己读文件、改代码、跑一遍确认、再给结论。看完就回来读代码。</i></sub></p>
 
-This README follows the same arc: the first half helps you **read it** (the code map, the main loop, eight essays), the second half helps you **fork it** and points at a few directions worth pushing further.
+这份 README 也就按这条线铺开：上半带你**读懂**（代码地图、主循环、八篇导读），下半带你 **fork** 它、再指几个能往更好里做的方向。
 
-## Run it once first (five minutes before you read)
+## 先跑一次（读之前的五分钟）
 
-Before you read the source, get it running on your machine once to build some intuition. It's a foundation meant for forking, so the recommended path is to clone it and install editable, reading and changing as you go:
+读源码之前，先让它在你机器上活一次，建立点体感。它是个拿来 fork 的地基，所以推荐直接 clone 下来、可编辑安装，边读边改：
 
 ```bash
-git clone https://github.com/he-yufeng/CoreCoder
-cd CoreCoder
+git clone https://github.com/he-yufeng/MyCoder
+cd MyCoder
 pip install -e .
 ```
 
-If you just want to get it running first, `pip install corecoder` works too.
+只想先跑起来找找感觉，直接 `pip install mycoder` 也行。
 
-Give it a model and a key and it goes. It speaks the OpenAI-compatible API by default, and switching providers is usually just two environment variables:
+给它一个模型加一把 key 就能动。默认走 OpenAI 兼容接口，换 provider 通常只是改两个环境变量：
 
-| Provider | Example env vars |
+| Provider | 环境变量示例 |
 |---|---|
-| OpenAI (default `gpt-5.5`) | `OPENAI_API_KEY=sk-...` |
-| DeepSeek | `OPENAI_API_KEY=sk-... OPENAI_BASE_URL=https://api.deepseek.com CORECODER_MODEL=deepseek-chat` |
-| Local Ollama | `OPENAI_API_KEY=ollama OPENAI_BASE_URL=http://localhost:11434/v1 CORECODER_MODEL=qwen2.5-coder` |
+| OpenAI（默认 `gpt-5.5`） | `OPENAI_API_KEY=sk-...` |
+| DeepSeek | `OPENAI_API_KEY=sk-... OPENAI_BASE_URL=https://api.deepseek.com MYCODER_MODEL=deepseek-chat` |
+| 本地 Ollama | `OPENAI_API_KEY=ollama OPENAI_BASE_URL=http://localhost:11434/v1 MYCODER_MODEL=qwen2.5-coder` |
 
-Kimi, Qwen and the like are the same two variables; for providers that don't even offer an OpenAI-compatible endpoint, the optional LiteLLM backend (`pip install "corecoder[litellm]"`) routes to a hundred-plus of them. The third essay goes into this in detail. The key can be `export`ed directly or dropped into a `.env` at the project root, which is loaded on startup. Then:
-
-```bash
-corecoder                                             # interactive REPL
-corecoder -p "add error handling to parse_config()"   # one-shot mode, exits when done
-```
-
-## Code runs in a sandbox
-
-The `bash` tool in the original core gated commands with a regex blacklist — a
-handful of known-destructive patterns, trivially bypassed by any command the
-list hadn't seen. Phase 1 of the production pass replaces it with
-`execute_in_sandbox`: every command runs in a throwaway Docker container that has
-
-- **no network** — there is no channel to exfiltrate to,
-- a **read-only root filesystem** and a **non-root `sandbox` user**,
-- **no extra privileges** (`no-new-privileges`, every capability dropped),
-- **memory / CPU / process caps** (configurable — see the table below) and a
-  **hard timeout** — a runaway command kills and re-creates the container,
-  keeping the workspace volume intact; if the container keeps OOM-killing,
-  execution stops after two retries instead of looping forever,
-- the project mounted **read-only at `/src`**, with edits landing in a scratch
-  `/workspace` that `get_diff()` surfaces as a unified diff,
-- and a **confirmation layer** for risky-but-legal commands (network egress,
-  package installs, git rewrites/pushes, recursive deletes) — a lightweight
-  mirror of Claude Code's permission system. Approvals are cached per session
-  keyed by `(rule, command)`; a confirmation waits at most 60 seconds and
-  Ctrl+C counts as a denial; a denied command comes back with a concrete
-  alternative and a "don't retry" note. Set `CORECODER_ALLOW_RISKY_COMMANDS=1`
-  to auto-approve unattended.
-
-Build the image once:
+Kimi、Qwen 这些同样是改这两个变量；连 OpenAI 兼容接口都不给的 provider，装上可选的 LiteLLM 后端（`pip install "mycoder[litellm]"`）能路由一百多家。第三篇文章把这块讲得更细。key 可以直接 `export`，也可以在项目根目录扔个 `.env`，启动时自动加载。然后：
 
 ```bash
-docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/
+mycoder                                  # 交互式 REPL
+mycoder -p "给 parse_config() 加错误处理"   # 一次性模式，干完就退
 ```
 
-### Resource limits
+## 代码在沙箱里跑
 
-| Env var | Default | Meaning |
+最初核心里的 `bash` 工具用正则黑名单拦命令——列了几个已知危险模式，没见过的命令一下就绕过。第一阶段生产化升级把它换成了 `execute_in_sandbox`：每条命令都在一次性 Docker 容器里执行，容器有
+
+- **无网络**——不存在往外传数据的通道，
+- **只读根文件系统** + **非 root 的 `sandbox` 用户**，
+- **无额外权限**（`no-new-privileges`，丢掉全部 capability），
+- **内存 / CPU / 进程数上限**（默认 512 MB / 半核 / 128 pid，可用环境变量调）与**硬超时**——失控命令直接杀掉容器重建，工作区卷不受影响；容器连续 OOM 被杀时，重试两次即熔断停止，不再无限循环，
+- 项目以**只读方式挂到 `/src`**，改动落在临时 `/workspace`，`get_diff()` 把它输出成 unified diff，
+- 以及一层**危险命令确认**：网络外联、装包、git 改写/推送、递归删除这类「危险但合法」的命令，执行前会先征询确认——仿照 Claude Code 的 permission system 做的一个轻量版。批准按「规则 + 命令」在会话内缓存；确认等待最多 60 秒，Ctrl+C 视为拒绝；被拒的命令会返回具体替代方案并提示「不要重试」。无人值守场景用 `MYCODER_ALLOW_RISKY_COMMANDS=1` 自动放行。
+
+先构建一次镜像：
+
+```bash
+docker build -t mycoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/
+```
+
+### 资源限制
+
+| 环境变量 | 默认值 | 说明 |
 |---|---|---|
-| `CORECODER_SANDBOX_MEM` | `512m` | container memory cap |
-| `CORECODER_SANDBOX_CPU` | `0.5` | CPU cores (may be fractional) |
-| `CORECODER_SANDBOX_PIDS` | `128` | max processes in the container |
+| `MYCODER_SANDBOX_MEM` | `512m` | 容器内存上限 |
+| `MYCODER_SANDBOX_CPU` | `0.5` | CPU 核数（可为小数） |
+| `MYCODER_SANDBOX_PIDS` | `128` | 容器内最大进程数 |
+| `MYCODER_SANDBOX_IDLE_TIMEOUT` | `600` | 沙箱闲置多少秒后自动停止容器（秒；保留卷、下次调用自动重启，`0` 表示禁用） |
 
-Large front-end builds: `CORECODER_SANDBOX_MEM=2g`. Java/Maven compiles:
-`CORECODER_SANDBOX_MEM=4g CORECODER_SANDBOX_CPU=2`.
+大型前端项目建议 `MYCODER_SANDBOX_MEM=2g`；Java/Maven 编译建议 `MYCODER_SANDBOX_MEM=4g MYCODER_SANDBOX_CPU=2`。
 
-### Sandbox → host file sync
+### 沙箱 → 宿主文件同步
 
-The sandbox writes to `/workspace`, which the host file tools can't see.
-`execute_in_sandbox` therefore only *reports* which files changed (up to 50,
-via `git status` in the workspace), and `sync_workspace()` is the explicit
-pull-back step:
+沙箱写到 `/workspace`，宿主文件工具看不到。因此 `execute_in_sandbox` 只**报告**改动了哪些文件（最多 50 个，用工作区里的 `git status` 判定），真正拉回宿主的是显式的 `sync_workspace()`：
 
-- `sync_workspace()` copies changed files to the host project directory.
-- `sync_workspace(clean=True)` additionally deletes host files that were
-  deleted inside the sandbox.
-- `read_file` / `write_file` accept `/workspace/...` paths directly: when the
-  sandbox volume exists they are mapped onto the host project directory. The
-  mapping is keyed on the **volume**, not the container, so it still works
-  after the sandbox is stopped.
+- `sync_workspace()` 把变更文件复制回宿主项目目录。
+- `sync_workspace(clean=True)` 额外删除沙箱内已删除的宿主文件。
+- `read_file` / `write_file` 可直接用 `/workspace/...` 路径：沙箱卷存在时自动映射到宿主项目目录。映射按**卷名**而非容器判定，沙箱停止后依然有效。
 
-If Docker isn't reachable the agent degrades gracefully instead of dying: it
-**fails closed** by default, and only runs commands on the host with an
-allowlist, a timeout, and a WARNING audit log after you confirm — set
-`CORECODER_ALLOW_LOCAL_EXEC=1` for unattended opt-in.
+Docker 不可用时不会崩，而是**优雅降级**：默认**拒绝**（fail closed），只有在你确认之后，才允许带白名单、超时和 WARNING 审计日志在本机跑命令；无人值守场景用 `MYCODER_ALLOW_LOCAL_EXEC=1` 显式开启。
 
-### Phase 2: pure-tool search
+### Phase 2：纯工具搜索
 
-The agent finds code by *searching*, not by a hand-built index. Phase 2 added
-the agentic-search pair plus the gate both share:
+Agent 靠**搜索**来找代码，而不是靠手工建的索引。Phase 2 加了搜索对，以及两者共用的那道闸：
 
-- **`grep_search`** runs ripgrep when it's on `PATH` and falls back to a
-  pure-Python scan otherwise (10–50× slower on huge trees, identical output).
-  **`list_files`** finds files by glob. Both are path-guarded and symlink-safe.
-- **`path_guard`** is the single gate in front of them: no traversal out of the
-  workspace, no symlink escapes (a macOS `/var` symlinked-root gotcha is
-  handled), before any tool touches the filesystem.
-- **`prompts/search_strategy.py`** teaches the agent *how* to search — narrow
-  with targeted greps instead of reading whole files — so exploration stays
-  cheap even on large repos. Zero index, zero vectors: the whole strategy is
-  pure tools.
+- **`grep_search`**：`PATH` 上有 `rg` 就走 ripgrep，否则退到纯 Python 扫描（大仓库上约慢 10–50 倍，输出一致）。**`list_files`** 用 glob 找文件。两者都过路径闸、对符号链接安全。
+- **`path_guard`** 是它们前面的唯一闸门：任何工具碰文件系统之前，先堵死穿越出工作区的路径，再堵死符号链接逃逸（macOS `/var` 这类符号链接根目录的坑也处理了）。
+- **`prompts/search_strategy.py`** 教 Agent **怎么**搜——用精准的 grep 收窄，而不是整文件读——让探索在大仓库上也保持廉价。零索引、零向量，整套策略就是纯工具。
 
-### Phase 3: plan, correct, route
+### Phase 3：规划 · 修正 · 路由
 
-The Phase 3 pass turns the agent from an excellent executor into a deliberate
-decision-maker:
+Phase 3 把 agent 从「优秀执行者」升级成「聪明决策者」：
 
-- **`todo_write` / `todo_update`** create a structured plan and mark steps
-  `in_progress` / `done`. Invalid plans (cycles, dangling dependencies) are
-  rejected before they pollute context.
-- **A planning guard** in the dispatch layer blocks a mutation tool when the
-  current step isn't `in_progress` (once a plan exists); set
-  `CORECODER_ENFORCE_PLANNING=1` to also block mutations when no plan exists.
-- **Self-correction** classifies tool failures deterministically (transient →
-  retry with a longer timeout, OOM → fail fast, permission → escalate to the
-  user) instead of blindly retrying.
-- **`ModelRouter`** maps a task to a model tier via `config/model_routing.yaml`
-  (hot-reloaded; override the tier with `CORECODER_MODEL_TIER`).
-- **MCP Lite** is a pre-wired stdio MCP client whose timeouts raise a
-  structured error the correction loop understands (Phase 3.5 wires real
-  servers).
+- **`todo_write` / `todo_update`** 创建结构化计划并把步骤标记为 `in_progress` / `done`。无效计划（循环依赖、悬空依赖）在污染上下文之前就被拒绝。
+- **规划守卫** 在工具调度层拦截：一旦有活跃计划，修改类工具必须等当前步骤 `in_progress`；设 `MYCODER_ENFORCE_PLANNING=1` 可进一步做到「无计划即拦截修改」。
+- **自我修正** 用确定性规则分类工具失败（瞬态→加长超时重试、OOM→快速失败、权限→交给用户），而不是盲目重试。
+- **`ModelRouter`** 按 `config/model_routing.yaml`（热重载）把任务路由到模型 tier；可用 `MYCODER_MODEL_TIER` 覆盖。
+- **MCP Lite** 是预埋的 stdio MCP 客户端，超时抛结构化错误、修正循环可识别（Phase 3.5 接真实服务器）。
 
-Other tunables: `CORECODER_CONFIRM_TIMEOUT` (default `60`, the confirmation
-prompt deadline) and, for `grep_search`, note that without `rg` the pure-Python
-fallback is used — roughly 10–50× slower on large trees, identical output.
+其它可调项：`MYCODER_CONFIRM_TIMEOUT`（默认 `60`，确认提示的等待上限）；`grep_search` 无 `rg` 时走纯 Python 兜底——大仓库上约慢 10–50 倍，输出一致。
 
-### Phase 3.5: MCP
+### Phase 3.5：MCP
 
-`corecoder/mcp/` exposes external MCP servers as ordinary tools
-(`mcp_<server>_<tool>`), protocol-isolated: JSON-RPC framing, SSE reconnect,
-capability negotiation and error-code mapping are all digested behind
-`Tool.execute(**kwargs) -> str`, so Planning and Self-Correction need no
-changes. Two transports — stdio (Content-Length framing, crash restart, stderr
-correlated to the active request) and SSE (dual-endpoint discovery,
-Last-Event-ID replay, exponential-backoff reconnect) — plus a security policy
-(per-server tool whitelist, parameter regexes like `^/workspace/.*`), secrets
-via `token_env`, discovery timeouts (`skip`/`partial`/`block`), and a
-per-call structured trace. Configure servers in `config/mcp_servers.yaml`
-(all opt-in; the CLI picks them up automatically). Migration: the Phase 3
-`tools/mcp_lite.py` prototype is superseded by `corecoder.mcp`; its
-`MCPToolError` is now the unified type.
+`mycoder/mcp/` 把外部 MCP Server 暴露成普通工具（`mcp_<server>_<tool>`），协议隔离：JSON-RPC 分帧、SSE 重连、能力协商、错误码映射全部消化在 `Tool.execute(**kwargs) -> str` 背后，Planning 和 Self-Correction 零修改。两个传输层——stdio（Content-Length 分帧、崩溃重启、stderr 关联当前请求）与 SSE（双端点发现、Last-Event-ID 重放、指数退避重连）——加安全策略（按 Server 的工具白名单、参数正则如 `^/workspace/.*`）、密钥走 `token_env`、发现超时（`skip`/`partial`/`block`）、每次调用一条结构化 trace。在 `config/mcp_servers.yaml` 配置 Server（全部默认关闭，CLI 自动加载已启用的）。迁移：Phase 3 的 `tools/mcp_lite.py` 原型已被 `mycoder.mcp` 取代，其 `MCPToolError` 现在共用同一类型。
 
-**Dependency note.** The MCP layer adds zero mandatory dependencies: the stdio
-transport is pure standard library. SSE needs `aiohttp` — install it with
-`pip install corecoder[mcp]` (imported lazily, so you only pay for it if you
-use SSE). aiohttp over httpx: SSE streaming support is more mature and
-connection reuse is easier to control; a future switch to httpx + anyio is a
-low-risk, low-priority option.
+**依赖说明**：MCP 层**零强制新增依赖**——stdio 传输只用标准库。SSE 传输需要 `aiohttp`（用 `pip install mycoder[mcp]` 安装；惰性导入，不用 SSE 就不必装）。选 aiohttp 而非 httpx：SSE 流式支持更成熟、连接复用更可控；未来若需进一步轻量化，可评估 httpx + anyio 组合替换，属低风险、低优先级。
 
-**Migrate from SSE to Streamable HTTP** (MCP 2025-03-26 supersedes SSE).
+**从 SSE 迁移到 Streamable HTTP**（MCP 2025-03-26 已取代 SSE）。
 
-| Old (SSE) | New (Streamable HTTP) |
+| 旧（SSE） | 新（Streamable HTTP） |
 |---|---|
-| `transport: sse` + `sse_endpoint` / `post_endpoint` | `transport: streamable_http` + a single `endpoint` |
+| `transport: sse` + `sse_endpoint` / `post_endpoint` | `transport: streamable_http` + 单一 `endpoint` |
 
 ```yaml
-# old
+# 旧
 servers:
   github:
     transport: sse
     sse_endpoint: https://mcp.github.com/sse
     post_endpoint: https://mcp.github.com/messages
-# new
+# 新
 servers:
   github:
     transport: streamable_http
     endpoint: https://mcp.github.com/api/v1
 ```
 
-Behavioral differences: SSE uses a separate GET event stream + POST requests;
-Streamable HTTP uses one POST endpoint whose response body IS the SSE stream
-(and supports the 202 Accepted semantic). The SSE transport still works but
-logs a deprecation warning. Timeline: deprecated in v0.4.x, disabled by
-default in v0.5.0, removed in v1.0.0.
+行为差异：SSE 用独立 GET 事件流 + POST 发请求；Streamable HTTP 用单一 POST 端点，响应体本身就是 SSE 流（并支持 202 Accepted 语义）。SSE 传输仍可用，但会打印弃用警告。时间表：v0.4.x 弃用、v0.5.0 默认禁用、v1.0.0 移除。
 
-### Phase 4: system intelligence
+### Phase 4：系统智能
 
-CoreCoder grows from a single smart agent into an orchestratable agent system:
+MyCoder 从「单个聪明的 Agent」升级为「可编排的智能体系统」：
 
-- **Multi-agent orchestration** (`corecoder/agents/`): `SubagentDefinition`
-  (explorer / planner / implementer / reviewer), `SubagentRunner` (isolated
-  context, timeout, token budget, returns a validated RFC v1.0.1 envelope),
-  `Blackboard` (shared KV store with TTL and `asyncio.Lock`), and an
-  `Orchestrator` (sequential / parallel / conditional strategies, circuit
-  breaker after 3 consecutive failures). The `spawn_subagent` tool exposes it
-  to the main agent.
-- **Subagent Result Contract** (`corecoder/contracts/`): the frozen RFC v1.0.1
-  envelope enforced by Pydantic — state-combination matrix, strict
-  `completeness_ratio` bounds, per-instance idempotency UUIDs, artifact caps.
-- **LSP symbol intelligence**: LSP servers integrate via MCP (`mcp-server-lsp`,
-  opt-in in `config/mcp_servers.yaml`), with intent-aware tool descriptions
-  (✅/❌ scenarios) and an `LSPResultCompressor` (dedup → rank → truncate).
-- **Streamable HTTP transport** (MCP 2025-03-26): POST response body IS the
-  SSE stream, coexists with the existing SSE transport.
-- **Evaluation** (`corecoder/eval/`): orchestration metrics (delegation
-  accuracy, speedup, context inflation, LSP adoption), a failure-pattern
-  knowledge base, and an incremental verification dashboard.
+- **多 Agent 编排**（`mycoder/agents/`）：`SubagentDefinition`（explorer / planner / implementer / reviewer）、`SubagentRunner`（隔离上下文、超时、Token 预算，返回经校验的 RFC v1.0.1 信封）、`Blackboard`（共享 KV，带 TTL 与 `asyncio.Lock`）、`Orchestrator`（串行/并行/条件策略，连续 3 次失败熔断）。`spawn_subagent` 工具把它暴露给主 Agent。
+- **Subagent Result Contract**（`mycoder/contracts/`）：冻结的 RFC v1.0.1 信封由 Pydantic 强制——状态组合矩阵、`completeness_ratio` 严格边界、幂等 UUID、制品上限。
+- **LSP 符号智能**：LSP Server 经 MCP 集成（`mcp-server-lsp`，`config/mcp_servers.yaml` 中 opt-in），配意图化工具描述（✅/❌ 场景）与 `LSPResultCompressor`（去重→排序→截断）。
+- **Streamable HTTP 传输**（MCP 2025-03-26）：POST 响应体即 SSE 流，与既有 SSE 传输并存。
+- **评测体系**（`mycoder/eval/`）：编排效率指标（委派准确率、加速比、上下文膨胀率、LSP 采用率）、失败模式知识库、增量验证仪表盘。
 
-### Phase 5: hybrid-retrieval memory
+### Phase 5：混合检索记忆
 
-Cross-session memory that survives restarts, with **zero infrastructure** and
-**graceful degradation** (every optional backend can be missing):
+跨会话记忆系统，重启后依然有效，**零基础设施**、**渐进式降级**（每个可选后端缺失都能优雅退回）：
 
-- **Storage** (`corecoder/memory/store.py`): two SQLite databases with the same
-  schema — project (`<repo>/.corecoder/memory.db`) and global
-  (`~/.corecoder/memory.db`). Each holds a `memories` table, a manually-managed
-  FTS5 index (`tokenize='ascii'`, content is jieba/bigram-tokenized before
-  insert), and an `embeddings` vector table.
-- **Tokenization** (`corecoder/memory/tokenizer.py`): jieba word segmentation
-  when installed, otherwise a zero-dependency CJK bigram tokenizer — both give
-  *word-level* Chinese matching (searching `认证模块` finds a memory containing
-  `认证模块使用JWT…`), never single-character.
-- **Embeddings** (`corecoder/memory/embedder.py`): `fastembed` →
-  `sentence-transformers` → built-in deterministic hashing backend (numpy), or
-  `none`. Heavy models load lazily; every backend shares a bounded hand-rolled
-  LRU cache.
-- **Vectors** (`store._NumpyVectorBackend` / `_Vec0VectorBackend`): `sqlite-vec`
-  when the extension loads, otherwise brute-force cosine over a BLOB column —
-  so the hybrid path works with zero extra dependencies.
-- **Hybrid retrieval** (`corecoder/memory/retriever.py`): BM25 (FTS5, both
-  dbs) + vector cosine fused with Reciprocal Rank Fusion (`k=60`); filters
-  (scope / type / min confidence / deprecated) are applied with a batched
-  `IN` query.
-- **Confidence decay** (`corecoder/memory/maintenance.py`): `auto` memories
-  untouched for 30 days (≥3 accesses) lose confidence — project ×0.8, global
-  ×0.95 — and drop below a threshold become `deprecated_by='decayed'`, pruned
-  by `compact()`. `user` / `confirmed` memories never decay.
-- **Six tools**: `memory_save` / `memory_search` / `memory_list` /
-  `memory_forget` / `memory_confirm` / `memory_stats`. Saves are deduplicated
-  (cosine > 0.85 → update, not duplicate) and redacted for secrets.
-- **Integration**: before `todo_write`, relevant memories are injected into the
-  plan prompt (`planning_guard`); a recovered Self-Correction failure settles a
-  `pattern` memory; a finished plan is distilled into a `decision` memory.
+- **存储层**（`mycoder/memory/store.py`）：两个同构 SQLite 库——项目级（`<repo>/.mycoder/memory.db`）与全局级（`~/.mycoder/memory.db`）。各含 `memories` 主表、应用层手动管理的 FTS5 索引（`tokenize='ascii'`，写入前经 jieba/bigram 分词）、以及 `embeddings` 向量表。
+- **分词**（`mycoder/memory/tokenizer.py`）：有 jieba 用词级分词，没有则退回零依赖 CJK bigram 分词器——两者都保证**词级**中文匹配（搜「认证模块」能命中含「认证模块使用JWT…」的记忆），而非单字。
+- **嵌入器**（`mycoder/memory/embedder.py`）：`fastembed` → `sentence-transformers` → 内置确定性 hashing 后端（numpy），或 `none`。重模型懒加载，各后端共享自研有界 LRU 缓存。
+- **向量**（`store._NumpyVectorBackend` / `_Vec0VectorBackend`）：能加载 `sqlite-vec` 用 `vec0`，否则对 BLOB 列做 numpy 暴力余弦——零额外依赖也能跑通混合链路。
+- **混合检索**（`mycoder/memory/retriever.py`）：BM25（FTS5，双库）+ 向量余弦，用 Reciprocal Rank Fusion（`k=60`）融合；范围/类型/最低置信度/废弃 过滤用批量 `IN` 查询。
+- **置信度衰减**（`mycoder/memory/maintenance.py`）：`auto` 记忆 30 天未访问（≥3 次访问）置信度下降——项目 ×0.8、全局 ×0.95——跌破阈值标记 `deprecated_by='decayed'`，由 `compact()` 清理。`user` / `confirmed` 记忆永不衰减。
+- **六个工具**：`memory_save` / `memory_search` / `memory_list` / `memory_forget` / `memory_confirm` / `memory_stats`。保存先去重（余弦 > 0.85 更新而非新建）并做敏感信息脱敏。
+- **集成**：`todo_write` 前经 `planning_guard` 注入相关记忆；Self-Correction 修复成功后沉淀 `pattern` 记忆；计划完成时把决策提炼为 `decision` 记忆。
 
-Configuration lives in `config/memory.yaml` (`embedder.backend`, `rrf_k`,
-`max_tokens`, `decay_days`, …). All of it is optional and lazily loaded.
+配置见 `config/memory.yaml`（`embedder.backend`、`rrf_k`、`max_tokens`、`decay_days` 等），全部可选且懒加载。
 
-## Read it: the code map
+## 读懂它：代码地图
 
-Laid out flat, the whole project is this big. Skim it before you clone and you'll know where everything is. This is the most concrete difference from Claude Code's hundreds of thousands of lines: you can read it like the table of contents of a book. Start from the main loop in `agent.py`; that's the heart of the whole agent.
+整个项目摊开就这么大，clone 之前扫一眼，心里就有数了。这也是它和 Claude Code 几十万行最实在的区别：你能把它当一本书的目录来读。建议从 `agent.py` 的主循环读起，那是整个 agent 的心脏。
 
 ```
-corecoder/
-├── agent.py          agent loop + parallel tool exec       172 lines   ← start here
-├── llm.py            streaming client + retry + cost        344 lines
-├── context.py        three-tier context compaction          210 lines
-├── session.py        save / resume + path-traversal guard    97 lines
-├── prompt.py         system prompt + search strategy         39 lines
-├── prompts/          reusable prompt segments                36 lines   ← Phase 2
-├── cli.py            REPL + slash commands + one-shot       306 lines
-├── config.py         env-var config                          57 lines
-├── planner.py        planning engine (Todo/Plan/Guard)      298 lines   ← Phase 3
-├── model_router.py   task→model-tier routing (YAML)         104 lines   ← Phase 3
-├── sandbox/          Docker-backed command isolation        1568 lines  ← Phase 1
-│   ├── docker_executor.py  hardened container lifecycle     495 lines
-│   ├── executor.py         backend selection + fallback     229 lines
-│   ├── sync.py             /workspace <-> host sync         255 lines
-│   ├── policy.py           permission confirm + cache       284 lines
-│   ├── local_executor.py   degraded host allowlist          160 lines
-│   └── models·logger·locking·__init__                       145 lines
-├── mcp/              MCP client (stdio/SSE/Streamable)      1623 lines  ← Phase 3.5/4
-│   ├── client.py     transports + retry                      92 lines
-│   ├── registry.py   server loading + tool registration      166 lines
-│   ├── adapter.py    MCP tool adapters                       131 lines
-│   ├── security.py   per-server allowlist + param regexes     44 lines
-│   ├── lsp_metadata.py · lsp_compressor.py  LSP intelligence  225 lines  ← Phase 4
-│   └── config·errors·observability·runtime·__init__          203 lines
-├── agents/           multi-agent orchestration               819 lines  ← Phase 4
-│   ├── orchestrator.py  seq/parallel/conditional + breaker   306 lines
-│   ├── runner.py        sub-agent executor                   272 lines
-│   ├── definition.py    SubagentDefinition                    78 lines
-│   ├── blackboard.py    shared KV + TTL                       60 lines
-│   └── tool_validator.py sub-agent tool validation            87 lines
-├── contracts/        RFC envelope + Pydantic validation      609 lines  ← Phase 4
-│   ├── subagent_result.py  envelope + state-combination matrix  321 lines
-│   └── envelope.py · prompts.py                              288 lines
-├── eval/             evaluation harness (metrics·runner·kb·dashboard)  226 lines  ← Phase 4
-├── memory/           hybrid-retrieval memory system          1588 lines  ← Phase 5
-│   ├── store.py      dual-db SQLite + FTS5 + vector backends  619 lines
-│   ├── embedder.py   multi-backend embeddings + LRU           198 lines
-│   ├── retriever.py  BM25 + vector, RRF fusion                103 lines
-│   ├── maintenance.py confidence decay + compact + stats      113 lines
-│   ├── integration.py planning_guard / Self-Correction wiring 130 lines
-│   ├── types.py      data models                              129 lines
-│   ├── tokenizer.py  jieba→bigram degraded tokenization        75 lines
-│   ├── prompt.py     memory-section injection + token budget   74 lines
-│   └── config·security·__init__                               147 lines
-└── tools/            twenty tools                             2299 lines
-    ├── sandbox_tool.py  execute_in_sandbox (replaces bash)    184 lines
-    ├── sync_tool.py     sync_workspace (pull changes back)     76 lines
-    ├── grep_search.py   rg-first regex search + fallback       232 lines  ← Phase 2
-    ├── list_files.py    glob file lookup (symlink-safe)         96 lines  ← Phase 2
-    ├── path_guard.py    shared path-traversal/symlink gate      78 lines  ← Phase 2
-    ├── read_file.py     read + ranges + 300-line cap           127 lines
-    ├── todo_tools.py    todo_write / todo_update (planning)    144 lines  ← Phase 3
-    ├── correction.py    error→strategy self-correction         169 lines  ← Phase 3
-    ├── mcp_lite.py      MCP prototype client                   121 lines  ← Phase 3
-    ├── subagent_tools.py spawn_subagent                         83 lines  ← Phase 4
-    ├── memory_tools.py  six memory tools                       199 lines  ← Phase 5
-    ├── fetch.py         fetch_url                               40 lines
-    ├── workspace_path.py  /workspace path mapping               57 lines
-    ├── bash.py          pre-check regex gate (kept as helper)  127 lines
-    ├── edit.py          unique-match search/replace + diff      92 lines
-    ├── grep.py          content search (legacy)                 84 lines
-    ├── glob_tool.py     filename matching (legacy)              52 lines
-    ├── batch_diagnostics.py  sandbox diagnostics helper          41 lines
-    ├── write.py         file write                              45 lines
-    ├── agent.py         sub-agent spawning                     162 lines
-    └── base.py          tool base class                         27 lines
+mycoder/
+├── agent.py          agent 主循环 + 并行工具执行         172 行   ← 从这里开始读
+├── llm.py            流式客户端 + 重试 + 成本统计         344 行
+├── context.py        三层上下文压缩                       210 行
+├── session.py        会话存盘 / 续聊 + 路径穿越防护        97 行
+├── prompt.py         系统提示词 + 搜索策略                 39 行
+├── prompts/          可复用提示片段                        36 行   ← Phase 2
+├── cli.py            REPL + 斜杠命令 + 一次性模式          306 行
+├── config.py         环境变量配置                          57 行
+├── planner.py        规划引擎（Todo/Plan/Guard）           298 行   ← Phase 3
+├── model_router.py   任务→模型 tier 路由（YAML）            104 行   ← Phase 3
+├── sandbox/          Docker 容器命令隔离                   1568 行  ← Phase 1
+│   ├── docker_executor.py  加固容器生命周期                495 行
+│   ├── executor.py         后端选择 + 优雅降级             229 行
+│   ├── sync.py             /workspace ↔ 宿主增量同步        255 行
+│   ├── policy.py           权限确认 + 会话缓存              284 行
+│   ├── local_executor.py   降级版宿主白名单执行             160 行
+│   └── models·logger·locking·__init__                      145 行
+├── mcp/              MCP 客户端（stdio/SSE/Streamable）     1623 行  ← Phase 3.5/4
+│   ├── client.py     传输层 + 重试                           92 行
+│   ├── registry.py   服务器加载 + 工具注册                  166 行
+│   ├── adapter.py    MCP 工具适配                           131 行
+│   ├── security.py   按 Server 白名单 + 参数正则              44 行
+│   ├── lsp_metadata.py · lsp_compressor.py  LSP 符号智能      225 行  ← Phase 4
+│   └── config·errors·observability·runtime·__init__          203 行
+├── agents/           多 Agent 编排                          819 行  ← Phase 4
+│   ├── orchestrator.py  串/并/条件策略 + 熔断                306 行
+│   ├── runner.py        子 agent 执行器                     272 行
+│   ├── definition.py    SubagentDefinition                    78 行
+│   ├── blackboard.py    共享 KV + TTL                         60 行
+│   └── tool_validator.py 子 agent 工具校验                    87 行
+├── contracts/        RFC 信封 + Pydantic 校验               609 行  ← Phase 4
+│   ├── subagent_result.py  信封 + 状态组合矩阵               321 行
+│   └── envelope.py · prompts.py                             288 行
+├── eval/             评测体系（metrics·runner·kb·dashboard）  226 行  ← Phase 4
+├── memory/           混合检索记忆系统                       1588 行  ← Phase 5
+│   ├── store.py      双库 SQLite + FTS5 + 向量后端           619 行
+│   ├── embedder.py   多后端嵌入 + LRU                        198 行
+│   ├── retriever.py  BM25+向量 RRF 融合                      103 行
+│   ├── maintenance.py 置信度衰减 + compact + stats           113 行
+│   ├── integration.py 接入 planning_guard / Self-Correction  130 行
+│   ├── types.py      数据模型                                129 行
+│   ├── tokenizer.py  jieba→bigram 降级分词                     75 行
+│   ├── prompt.py     记忆段注入 + token 预算                   74 行
+│   └── config·security·__init__                              147 行
+└── tools/            二十个工具                              2299 行
+    ├── sandbox_tool.py  execute_in_sandbox（取代 bash）       184 行
+    ├── sync_tool.py     sync_workspace（拉回变更）             76 行
+    ├── grep_search.py   rg 优先正则搜索 + Python 兜底          232 行  ← Phase 2
+    ├── list_files.py    glob 找文件（符号链接安全）             96 行  ← Phase 2
+    ├── path_guard.py    共用路径穿越/符号链接闸                78 行  ← Phase 2
+    ├── read_file.py     读取 + 区间 + 300 行上限               127 行
+    ├── todo_tools.py    todo_write / todo_update              144 行  ← Phase 3
+    ├── correction.py    错误→策略自我修正                      169 行  ← Phase 3
+    ├── mcp_lite.py      MCP 原型客户端                         121 行  ← Phase 3
+    ├── subagent_tools.py spawn_subagent                        83 行  ← Phase 4
+    ├── memory_tools.py  六个记忆工具                           199 行  ← Phase 5
+    ├── fetch.py         fetch_url                              40 行
+    ├── workspace_path.py  /workspace 路径映射                   57 行
+    ├── bash.py          预检正则闸（保留作辅助）                127 行
+    ├── edit.py          唯一匹配搜索替换 + diff                 92 行
+    ├── grep.py          内容搜索（旧）                          84 行
+    ├── glob_tool.py     文件名匹配（旧）                        52 行
+    ├── batch_diagnostics.py  沙箱诊断辅助                      41 行
+    ├── write.py         文件写入                               45 行
+    ├── agent.py         子 agent 派生                         162 行
+    └── base.py          工具基类                               27 行
 ```
 
-(The container image itself is built from `sandbox/Dockerfile` at the repo root.) Twenty tools: `execute_in_sandbox` (the sandboxed successor to `bash`), `sync_workspace`, `grep_search` and `list_files` (the Phase 2 agentic-search pair: zero index, zero embedding, path-guarded, ripgrep-first with a pure-Python fallback), `todo_write` and `todo_update` (the Phase 3 planning pair), `spawn_subagent` (Phase 4), the Phase 5 memory tools `memory_save` / `memory_search` / `memory_list` / `memory_forget` / `memory_confirm` / `memory_stats`, and the Phase 1/2 file tools `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `fetch_url`, `agent` (which spawns a sub-agent). The search strategy lives in `prompts/search_strategy.py`; the model-routing rules in `config/model_routing.yaml`; MCP servers in `config/mcp_servers.yaml` (all opt-in); the memory config in `config/memory.yaml`. Everything else is the CLI shell, config, and packaging wrapped around that engine core.
+（容器镜像本身由仓库根目录的 `sandbox/Dockerfile` 构建。）二十个工具：`execute_in_sandbox`（`bash` 的沙箱版继任者）、`sync_workspace`（拉回沙箱变更）、`grep_search` 与 `list_files`（Phase 2 纯工具驱动搜索对：零索引、零向量、路径受控、rg 优先 + 纯 Python 兜底）、`todo_write` 与 `todo_update`（Phase 3 规划对）、`spawn_subagent`（Phase 4）、Phase 5 的 `memory_save` / `memory_search` / `memory_list` / `memory_forget` / `memory_confirm` / `memory_stats`、以及 Phase 1/2 的文件类工具 `read_file`、`write_file`、`edit_file`、`glob`、`grep`、`fetch_url`、`agent`（派子 agent）。搜索策略在 `prompts/search_strategy.py`；模型路由规则在 `config/model_routing.yaml`；MCP Server 在 `config/mcp_servers.yaml`（全部默认关闭）；记忆配置在 `config/memory.yaml`。其余都是包在引擎核心外面的 CLI 外壳、配置和打包。
 
-## A `while` loop is the whole agent
+## 一个 while 循环就是 agent 的本体
 
-The whole of an agent fits in one sentence: hand the user's words to the model, run whatever tools it asks for, stuff the results back into the context, ask again, and keep going until it stops asking for tools and gives an answer. In code, that's about a dozen lines:
+一个 agent 的本体，一句话就能讲清：把用户的话交给模型，模型想调工具就执行，把结果塞回上下文，再问模型，直到它不再要工具、给出回答。落到代码，也就十来行：
 
 ```python
-# corecoder/agent.py · the main loop (trimmed skeleton)
+# mycoder/agent.py · 主循环（精简骨架）
 def chat(self, user_input):
     self.messages.append(user_input)
 
-    for _ in range(self.max_rounds):                   # bounded, so it can't run away
-        reply = self.llm.chat(self.messages, self.tools)   # ask the model what to do next
-        if not reply.tool_calls:                       # model wants no more tools
-            return reply.text                          #   -> done, hand the answer back
-        results = run_parallel(reply.tool_calls)       # tools requested -> run in parallel
-        self.messages += results                       # feed results back, loop again
+    for _ in range(self.max_rounds):                   # 循环有上限，跑不飞
+        reply = self.llm.chat(self.messages, self.tools)   # 交给模型规划下一步
+        if not reply.tool_calls:                       # 模型不再要工具
+            return reply.text                          #   → 收工，把回答给用户
+        results = run_parallel(reply.tool_calls)       # 要工具就并发执行
+        self.messages += results                       # 结果回灌，进入下一轮
 
-    return "(hit the round limit)"
+    return "(已达轮次上限)"
 ```
 
-That's the whole thing. The core skeleton is about twenty lines; counting parallel execution and the bookkeeping after a Ctrl+C interrupt, maybe forty. Almost everything else in CoreCoder's ~10,000 lines is there to clean up the mess the loop runs into once it meets the real world. `llm.py` — now 344 lines, among the biggest engine files — got that way not because calling a model is hard, but because a streamed response splinters each tool call's arguments into fragments you have to restitch in order, a provider will hand you half a JSON object or a null `usage` field, and 429s, timeouts, dropped connections and 5xx all need backoff-and-retry while the other 4xx should just raise. That unglamorous grunt work, not the loop, is where the real engineering of taking an agent from demo to delivery actually lives; the third essay follows it down to the line.
+就这么点。这个循环的核心骨架就二十来行，把并行执行和被 Ctrl+C 打断后的回填都算上，也才四十多行。MyCoder 约一万行里剩下的，几乎全在收拾它真跑起来之后冒出来的岔子。`llm.py`——现在 344 行，引擎里最大的文件之一——长成这样不是因为调模型有多难，而是流式返回里一个工具调用的参数会被切成好几段先后送到、得按顺序拼回去，provider 偶尔吐半截 JSON 或把 usage 填成 null，限流（429）、超时、连接中断和 5xx 都得退避重试，其余 4xx 该直接抛就别硬试。这些不起眼的脏活，而不是那个循环，才是一个 agent 从能演示走到能交付真正吃工程功夫的地方；第三篇文章顺着它拆到每一行。
 
-Three decisions are worth a closer look, because they're the kind of call you can only make after you've understood how others did it, and they're judgments you can lift straight into your own fork.
+有三个决定值得单独看，因为它们是「先读懂别人怎么做」之后才做得出的取舍，也是你 fork 自己 agent 时可以直接抄走的判断。
 
-**`edit_file` does search-and-replace on a unique match, not line numbers.** Line numbers are a trap: the model only has to miscount by one and it quietly edits the wrong place. Anchor on a unique snippet of the original instead. If there's no match, it hands the start of the file back so the model can re-anchor; if there are several matches, it makes the model bring more surrounding context rather than gamble on one. On a successful edit it returns a diff. Recoverable on failure, verifiable on success: the whole loop stays inside the tool.
+**`edit_file` 用唯一匹配的搜索替换，不靠行号。** 行号这东西，模型只要数偏一行，就会悄悄改错地方；锚定一段唯一的原文：匹配不到，就把文件开头甩回去让模型照着重新锚定；匹配到多处，就让它多带几行上下文再来，而不是赌一个。改成功了，连一段 diff 一起返回。失败能复位、成功能复核，闭环都收在工具自己手里。
 
-**Context isn't cut all at once when it's full; it gives ground in three tiers, cheapest first.** At half full (50%) it trims over-long tool outputs in place, a tier that's purely mechanical and costs no model call. If 70% still isn't enough, it has the model summarize the older turns into a single paragraph while keeping the most recent ones verbatim. Only at 90% does it hit the emergency tier and pull everything, summary and recent turns alike, down to its tightest form. Blunt truncation tends to throw away exactly the early decision a long task leans on most; tiering lets it surrender the least important things first instead of lopping off the oldest decisions wholesale from the start.
+**上下文不是满了才一刀切，而是按代价从轻到重分三档退让。** 先在半满（50%）时把超长的工具输出就地截短，这一档纯机械、不花一次模型调用；到 70% 还压不下去，就把较早的轮次交给模型总结成一段摘要，最近几轮原文原样留着；逼到 90% 才进应急档，连摘要带最近几轮一起收到最紧。粗暴截断往往恰好丢掉一个长任务最依赖的早期决定；分层退让，是让它按重要性从低到高一档档地让，而不是一上来就把最老的决定整段切掉。
 
-**You constrain a sub-agent by withholding the tool, not by writing rules and hoping it obeys.** A spawned sub-agent gets an isolated context and its own separate history, with a toolset exactly one item shorter than the parent's: the `agent` tool itself, so it can't recursively spawn more sub-agents. Handing it one fewer tool is cleaner than legislating a rule after the fact. It also reuses the parent's model connection (its spend folded into the same running total), truncates its output once it runs past 5,000 characters down to just the opening, and runs on a shorter round limit than the parent. The same restraint, end to end.
+**约束子 agent 能干什么，靠的是不给它那把工具，而不是写一堆规则求它听话。** 派出去的子 agent 拿到的是隔离的上下文、自己独立的一份历史，工具集只比父 agent 少一样：`agent` 工具本身，于是它没法再往下递归派子 agent。少给一件工具，比事后立一条规矩干净得多。它还复用父 agent 同一个模型连接（花销一并算进总账），输出一过 5000 字就截短、只留开头一段，轮次上限也压得比父 agent 更短。同一套克制，从头贯到尾。
 
-Every one of these *whys* is traced down to the actual lines of code in the series below.
+每一个「为什么」，下面的文章系列都拆到了具体代码行。
 
-## The source-reading series · 8 bilingual essays
+## 配套源码导读 · 八篇双语
 
-I also wrote a bilingual source-reading series, one intro plus seven parts, each in Chinese with an English mirror. Against CoreCoder's actual code, it walks through how agents like Claude Code work under the hood. One hard rule I set myself: every line count and every snippet is re-read and re-checked from the repo, never written from memory. The first six get you reading, the seventh gets you forking; read them in any order.
+我还写了一套双语源码导读，一篇导言加七篇正文，每篇都配英文镜像（`_EN.md`）。它对着 MyCoder 的真实代码，讲 Claude Code 这类 agent 的内部构造。有一条给自己立的硬规矩：每一处行数、每一段代码都从仓库里现读现核，绝不凭印象编。前六篇带你读懂，第七篇带你 fork，哪篇先读都行。
 
-- **[Intro · Read Claude Code through CoreCoder, then build your own](article/00-index_EN.md)**
-- **[01 · An agent, at its core, is a `while` loop](article/01-the-loop_EN.md)** — the main loop in `agent.py`, interrupts, and the round limit
-- **[02 · The tool system: letting the model act, safely](article/02-tools_EN.md)** — the seven tools in `tools/` and the bash safety gate
-- **[03 · Plug in any LLM, and keep the bill honest](article/03-llm-and-cost_EN.md)** — `llm.py`'s provider wrapper, retries, and cost accounting
-- **[04 · Surviving a long task on a finite window](article/04-context_EN.md)** — `context.py`'s three-tier compaction and orphaned tool messages
-- **[05 · Parallel execution and sub-agents](article/05-parallel-and-subagents_EN.md)** — thread-pool concurrency and sub-agent isolation
-- **[06 · Turning it into a real command-line tool](article/06-session-and-cli_EN.md)** — `session.py` and path-traversal defense
-- **[07 · Fork CoreCoder into your own coding agent](article/07-build-your-own_EN.md)** — from fork to custom tools to swapping models
+- **[导言 · 用 MyCoder 读懂 Claude Code，再造一个你自己的](article/00-index.md)**
+- **[01 一个 agent 的本体，是一个 while 循环](article/01-the-loop.md)** — `agent.py` 的主循环、打断与轮次上限
+- **[02 工具系统：让模型安全地动手](article/02-tools.md)** — `tools/` 七个工具与 bash 安全闸
+- **[03 接入任意大模型，顺便把账算清楚](article/03-llm-and-cost.md)** — `llm.py` 的 provider 包装、重试与成本统计
+- **[04 用有限的窗口扛住一个长任务](article/04-context.md)** — `context.py` 的三层压缩与孤儿 tool 消息
+- **[05 并行执行与子 agent](article/05-parallel-and-subagents.md)** — 线程池并发与子 agent 隔离
+- **[06 把它跑成一个真正的命令行工具](article/06-session-and-cli.md)** — `session.py` 与路径穿越防护
+- **[07 Fork MyCoder，搭一个你自己的 coding agent](article/07-build-your-own.md)** — 从 fork 到加自定义工具到换模型
 
-## Fork it, build something better
+## Fork 它，造个更好的
 
-Once you understand it, the natural next step is to fork. Getting started doesn't take much:
+读懂之后，最自然的下一步就是 fork。起手不用伤筋动骨：
 
-- **Swap in a model you actually use.** It's the two env vars from above; `llm.py` (344 lines) is the entry point for all provider adaptation.
-- **Add a tool of your own.** Write a new file against the tool base class in `tools/base.py` (27 lines): run tests, fetch a page, call an LSP, whatever. The end of the second essay walks you through your first one by hand.
-- **Rewrite the system prompt.** `prompt.py` is all of 39 lines; change one line and you'll watch the agent's temperament shift. It's the cheapest "change one thing, see a result" in the whole project.
-- **Import it as a library.** The top level exports `Agent`, `LLM`, and `Config`, ready to embed in your own program:
+- **换个你常用的模型。** 就是上面那两个环境变量，`llm.py`（344 行）是所有 provider 适配的入口。
+- **加一件你自己的工具。** 照 `tools/base.py`（27 行）的工具基类写个新文件，跑测试、抓网页、调 LSP 都行，第二篇文章末尾手把手带你写第一个。
+- **改系统提示词。** `prompt.py` 才 39 行，改一句就能看到 agent 的脾气变了，是门槛最低的「改一处就有反馈」。
+- **直接当库 import。** 顶层导出了 `Agent`、`LLM`、`Config`，能嵌进你自己的程序：
 
 ```python
-from corecoder import Agent, LLM
+from mycoder import Agent, LLM
 
 llm = LLM(model="deepseek-chat", api_key="sk-...", base_url="https://api.deepseek.com")
-print(Agent(llm=llm).chat("find every TODO comment in this project and list them"))
+print(Agent(llm=llm).chat("找出项目里所有 TODO 注释并列出来"))
 ```
 
-Going deeper, the directions are out in the open too. None of the following is in CoreCoder, by design, not because it's unfinished. Flip it around and each one is an entry point you can carry into a real tool of your own:
+往深里做，方向也都摆在明处。下面这些 MyCoder 都没做，是设计取舍，不是没做完；换个角度，每一条都是你能接着往下做、把它推向更强的入口：
 
-- **The sandbox isolates the shell, not the whole agent.** `execute_in_sandbox` runs commands in a hardened container (no network, read-only rootfs, caps dropped, limits enforced), but file edits still land on your host through `edit_file`/`write_file`, and the sandbox workspace is surfaced as a diff rather than written back. Making file tools sandboxed too — or syncing the workspace out on exit — is the natural next step.
-- **Retry is only exponential backoff.** No fallback model, no hard dollar budget. Follow `llm.py` down and add a fallback model chain plus a stop-on-over-budget gate; the change stays mostly inside that one file.
-- **Sub-agent execution is orchestrated but not streamed.** Phase 4 added an async `Orchestrator` and validated envelopes, but the main agent's `spawn_subagent` still runs synchronously with truncated output. A streaming/async executor — the main agent keeps working while a sub-agent streams — closes the exact gap the fifth essay identifies between this and how production agents stream execution.
-- **Memory is a lean local retriever, not a full RAG index.** Phase 5's hybrid search is SQLite FTS5 + numpy vectors fused by RRF — great for cross-session notes, not a chunked-and-embedded index over a big repo. Wiring an external vector DB or code chunking over a large codebase is the natural next step.
-- **MCP is a client, not a marketplace.** Phase 3.5/4 give it a real MCP client (stdio/SSE/Streamable HTTP) and LSP intelligence, but servers are still configured by hand. Auto-discovering servers, or packaging the agent's own tools as an MCP server for other agents, are both open.
+- **沙箱只隔离了 shell，没隔离整个 agent。** `execute_in_sandbox` 在加固容器里跑命令（无网络、只读根文件系统、丢光 capability、限制拉满），但 `edit_file` / `write_file` 的文件改动仍然落在宿主上，沙箱工作区只以 diff 形式暴露、不会写回仓库。下一步自然是让文件工具也进沙箱，或在退出时把工作区同步回宿主。
+- **重试只做了指数退避。** 没有 fallback 模型，也没有美元硬预算。顺着 `llm.py` 往下，加一条 fallback 模型链和超预算自动停的闸，改动基本就集中在这一个文件。
+- **子 agent 可编排，但仍未流式。** Phase 4 加了异步 `Orchestrator` 和校验信封，但主 agent 的 `spawn_subagent` 依旧是同步执行、输出截断。做成流式/异步执行器——主 agent 继续干活，子 agent 一边跑一边回流——正好补上第五篇点名的、相对生产级 agent 流式执行的那段差距。
+- **记忆是轻量本地检索，不是完整 RAG 索引。** Phase 5 的混合搜索是 SQLite FTS5 + numpy 向量做 RRF——做跨会话笔记绰绰有余，但不是大仓的分块嵌入索引。接外部向量库或做大仓代码分块，是自然的下一步。
+- **MCP 是客户端，不是市场。** Phase 3.5/4 给了它一个真 MCP 客户端（stdio/SSE/Streamable HTTP）和 LSP 智能，但 Server 仍靠手写配置。自动发现 Server，或把自己的一套工具打包成 MCP Server 供别的 agent 调用，都是空着的方向。
 
-The README only points; the seventh essay picks up the code details for each. Pick one and start; that's the whole reason the core is kept this small.
+README 只给方向，每条的代码细节第七篇接着讲。挑一个动手，就是把它做得更好的开始。
 
-## Commands
+## 命令
 
-Inside the REPL, `/help` lists everything; these are the ones you'll reach for:
+进了 REPL，`/help` 列全部，常用的这几个：
 
 ```
-/model <name>    switch model
-/compact         compact the context by hand
-/tokens          token usage and cost estimate
-/diff            files changed this session
-/save  /sessions save / list sessions
-quit / exit      exit (Ctrl+C cancels the current round)
+/model <名称>    切换模型
+/compact         手动压缩上下文
+/tokens          查看 token 用量和费用估算
+/diff            查看本次会话改过的文件
+/save  /sessions 保存 / 列出会话
+quit / exit      退出（Ctrl+C 取消当前回合）
 ```
 
-Session IDs are sanitized to safe characters before they become filenames, every archive lands under `~/.corecoder/sessions`, and a malicious session name can't traverse out.
+会话 ID 会先清洗成安全字符再拿去当文件名，存档统统落在 `~/.mycoder/sessions` 里，恶意会话名穿越不出去。
 
-## Related Projects
+## 相关项目
 
-If working through CoreCoder was useful, here are a few other tools I've built around agents and LLM systems:
+如果你读 MyCoder 读得还顺，下面几个我做的 agent / LLM 系统方向的工具也许用得上：
 
-- **[RepoWiki](https://github.com/he-yufeng/RepoWiki)** — dropped into an unfamiliar codebase? It gives you a guided wiki and a where-to-start reading path, a self-hostable DeepWiki alternative.
-- **[FindJobs-Agent](https://github.com/he-yufeng/FindJobs-Agent)** — stop sifting job boards by hand: it ranks postings against your resume and runs mock interviews.
-- **[ContractGuard](https://github.com/he-yufeng/ContractGuard)** — catch the risky clauses before you sign: it reads contracts and flags the dangerous bits.
-- **[GitSense](https://github.com/he-yufeng/GitSense)** — want to contribute to open source? It finds issues worth your time and gauges whether your PR will get merged.
-- **[CodeABC](https://github.com/he-yufeng/CodeABC)** — understand any codebase even if you don't code, built for non-programmers.
+- **[RepoWiki](https://github.com/he-yufeng/RepoWiki)** — 被丢进一个陌生代码库？它给你一份带「从哪读起」路径的 wiki，一个可自托管的 DeepWiki 替代。
+- **[FindJobs-Agent](https://github.com/he-yufeng/FindJobs-Agent)** — 别再手动刷招聘网站：它按你的简历给岗位排序，还能跑模拟面试。
+- **[ContractGuard](https://github.com/he-yufeng/ContractGuard)** — 签字前先把有风险的条款挑出来：它读合同、标出危险点。
+- **[GitSense](https://github.com/he-yufeng/GitSense)** — 想给开源做贡献？它帮你找到值得做的 issue，还能估你的 PR 多大概率被合。
+- **[CodeABC](https://github.com/he-yufeng/CodeABC)** — 不会写代码也能看懂一个项目，专给小白做的。
 
-## Contributing / License
+## 致谢
 
-Before you send anything, run `pytest tests/ -q` (447 tests: 445 run + 2 Docker-gated skips), `ruff check`, and `compileall`, and make sure they're green. The Docker-backed sandbox tests need the image built once: `docker build -t corecoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`. MIT licensed: fork it, learn from it, ship something better. A mention of this project is appreciated.
+本项目由 [CoreCoder](https://github.com/he-yufeng/CoreCoder) 更名、二次开发而来。感谢原作者 he-yufeng 的开源贡献——正是它的设计给了 MyCoder 生长的土壤。
+
+## 贡献 / License
+
+动手之前先跑一遍 `pytest tests/ -q`（447 个测试：445 个跑 + 2 个 Docker 门槛跳过）、`ruff check` 和 `compileall`，绿了再提。Docker 沙箱测试需要先构建一次镜像：`docker build -t mycoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/`。MIT License，欢迎 fork 拿去造更好的东西，能在 README 里留一句出处就更好。
 
 ---
 
-By [Yufeng He](https://github.com/he-yufeng), formerly at Moonshot AI (Kimi). I earlier wrote a fairly complete [Claude Code source analysis](https://zhuanlan.zhihu.com/p/1898797658343862272) on Zhihu; this project is its hands-on counterpart: that one walks you through reading it, this one through rebuilding it.
+作者 [何宇峰](https://github.com/he-yufeng)，曾任职 Moonshot AI (Kimi)。早前写过一篇相当完整的 [Claude Code 源码分析](https://zhuanlan.zhihu.com/p/1898797658343862272)，这个项目是它的动手版：那篇带你读懂，这个带你重建。
 
-> CoreCoder was formerly named NanoCoder; it was renamed to avoid confusion with [Nano-Collective/nanocoder](https://github.com/Nano-Collective/nanocoder), and old links redirect here automatically.
+> MyCoder 原名 NanoCoder，为避免和 [Nano-Collective/nanocoder](https://github.com/Nano-Collective/nanocoder) 混淆而改名，旧链接会自动跳到这里。

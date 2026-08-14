@@ -1,6 +1,6 @@
-# CoreCoder Eval Bench
+# MyCoder Eval Bench
 
-End-to-end evaluation harness for CoreCoder — a **black-box** benchmark that
+End-to-end evaluation harness for MyCoder — a **black-box** benchmark that
 drives the agent purely through the HTTP API and grades its code with pytest.
 
 ## What you get
@@ -42,7 +42,7 @@ drives the agent purely through the HTTP API and grades its code with pytest.
 
 ```
 runner.py
-  --base-url URL     CoreCoder API base (default http://localhost:8000)
+  --base-url URL     MyCoder API base (default http://localhost:8000)
   --dataset PATH     dataset.json (default eval_bench/dataset.json)
   --workspace PATH   workspace dir (default eval_bench/workspace)
   --results DIR      output dir (default results/<timestamp>)
@@ -79,7 +79,7 @@ results/<timestamp>/
 
 ## Notes
 
-* **Zero-intrusion:** nothing in `corecoder/` or `api/` is modified or imported
+* **Zero-intrusion:** nothing in `mycoder/` or `api/` is modified or imported
   by the harness; it talks to the agent only over HTTP.
 * **Determinism:** the API uses `temperature=0` by default, so a fixed dataset
   + fixed server should give reproducible passes. If you pass `--resume`, rerun

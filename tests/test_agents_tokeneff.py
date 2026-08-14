@@ -4,10 +4,10 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-from corecoder.agents.definition import BUILTIN_SUBAGENTS, SubagentDefinition
-from corecoder.agents.planner_prompt import build_system_prompt
-from corecoder.agents.runner import SubagentRunner
-from corecoder.tools import ALL_TOOLS
+from mycoder.agents.definition import BUILTIN_SUBAGENTS, SubagentDefinition
+from mycoder.agents.planner_prompt import build_system_prompt
+from mycoder.agents.runner import SubagentRunner
+from mycoder.tools import ALL_TOOLS
 
 # 真实评测发现: 简单任务烧满 60k token 被预算熔断。以下收紧是让每个子 agent
 # 更早压缩历史、更少轮次、更小 token 预算。
@@ -51,7 +51,7 @@ def test_subagent_uses_definition_context_window(monkeypatch):
                 }
             )
 
-    monkeypatch.setattr("corecoder.agent.Agent", _FakeAgent)
+    monkeypatch.setattr("mycoder.agent.Agent", _FakeAgent)
     orch = SimpleNamespace(llm=object(), tools=ALL_TOOLS)
     runner = SubagentRunner(
         definition=BUILTIN_SUBAGENTS["implementer"],
@@ -99,7 +99,7 @@ def test_subagent_uses_model_factory_tier(monkeypatch):
         def __call__(self, tier):
             return f"llm-for-{tier}"
 
-    monkeypatch.setattr("corecoder.agent.Agent", _FakeAgent)
+    monkeypatch.setattr("mycoder.agent.Agent", _FakeAgent)
     orch = SimpleNamespace(
         llm="shared", tools=ALL_TOOLS, model_factory=_Factory()
     )

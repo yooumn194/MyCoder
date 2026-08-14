@@ -13,5 +13,5 @@ __pycache__/
 venv/
 .env
 *.db
-.corecoder/
+.mycoder/
 hello.go

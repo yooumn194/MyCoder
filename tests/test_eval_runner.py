@@ -2,7 +2,7 @@
 
 import json
 
-from corecoder.eval.runner import main, run_benchmark
+from mycoder.eval.runner import main, run_benchmark
 
 
 def test_run_benchmark_produces_report():

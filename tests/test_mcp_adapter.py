@@ -2,8 +2,8 @@
 
 import pytest
 
-from corecoder.mcp.adapter import MCPToolAdapter
-from corecoder.mcp.errors import MCPRemoteError, MCPToolError
+from mycoder.mcp.adapter import MCPToolAdapter
+from mycoder.mcp.errors import MCPRemoteError, MCPToolError
 
 
 class _FakeClient:
@@ -84,11 +84,11 @@ def test_adapter_schema_conversion():
 
 def test_adapter_transparent_to_planning(monkeypatch):
     """mcp_* tools are ordinary mutation tools for the planning guard."""
-    from corecoder import planner as planner_mod
+    from mycoder import planner as planner_mod
 
     clear = planner_mod.clear_active_plan
     clear()
-    monkeypatch.setenv("CORECODER_ENFORCE_PLANNING", "1")
+    monkeypatch.setenv("MYCODER_ENFORCE_PLANNING", "1")
     a = _adapter()
     assert a.name.startswith("mcp_")
     assert planner_mod.planning_guard(a.name) is not None  # blocked without a plan

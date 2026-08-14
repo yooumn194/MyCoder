@@ -11,12 +11,12 @@ build/
 venv/
 .mypy_cache/
 .ruff_cache/
-.corecoder_history
+.mycoder_history
 .DS_Store
 .pytest_cache/
 .tmp/
 # Phase 5 runtime state: project-level memory db + plan store live here
-.corecoder/
+.mycoder/
 # eval_bench runtime artifacts
 results/
 eval_bench/workspace/

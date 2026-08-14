@@ -3,17 +3,17 @@
 import asyncio
 
 
-from corecoder.agents import (
+from mycoder.agents import (
     Blackboard,
     BUILTIN_SUBAGENTS,
     OrchestrationStrategy,
     Orchestrator,
     SubagentRunner,
 )
-from corecoder.contracts.envelope import (
+from mycoder.contracts.envelope import (
     SubagentResultEnvelope,
 )
-from corecoder.tools.subagent_tools import SpawnSubagentTool
+from mycoder.tools.subagent_tools import SpawnSubagentTool
 
 INSTANCE = "11111111-2222-3333-4444-555555555555"
 
@@ -253,7 +253,7 @@ async def test_circuit_breaker_after_3_failures():
 
 async def test_circuit_breaker_self_heals_after_cooldown():
     """A probe after the cooldown runs; on success the breaker closes."""
-    from corecoder.agents.orchestrator import CIRCUIT_BREAKER_COOLDOWN
+    from mycoder.agents.orchestrator import CIRCUIT_BREAKER_COOLDOWN
 
     calls = {"n": 0}
 
@@ -279,7 +279,7 @@ async def test_circuit_breaker_self_heals_after_cooldown():
 
 async def test_circuit_breaker_probe_failure_reopens():
     """A failing probe re-opens the breaker for another full cooldown."""
-    from corecoder.agents.orchestrator import CIRCUIT_BREAKER_COOLDOWN
+    from mycoder.agents.orchestrator import CIRCUIT_BREAKER_COOLDOWN
 
     async def _always_fail(task, system_prompt):
         return _envelope("failed")

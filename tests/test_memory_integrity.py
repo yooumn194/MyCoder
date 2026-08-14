@@ -1,8 +1,8 @@
 """P1 wrong-memory pollution correction (audit_integrity + correct_memory + tool)."""
 
-from corecoder.memory import MemoryEntry, MemoryStore
-from corecoder.memory.maintenance import MemoryMaintainer
-from corecoder.tools.memory_tools import MemoryCorrectTool
+from mycoder.memory import MemoryEntry, MemoryStore
+from mycoder.memory.maintenance import MemoryMaintainer
+from mycoder.tools.memory_tools import MemoryCorrectTool
 
 
 def _store(tmp_path):

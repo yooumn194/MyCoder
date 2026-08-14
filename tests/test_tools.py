@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from corecoder.tools import ALL_TOOLS, get_tool
+from mycoder.tools import ALL_TOOLS, get_tool
 
 
 def test_tool_count():
@@ -52,8 +52,8 @@ def test_all_tools_have_valid_schema():
 def local_sandbox_tool(monkeypatch, tmp_path):
     """Pin execute_in_sandbox to the degraded local backend so these tests are
     deterministic without Docker (the backend is covered in test_sandbox.py)."""
-    from corecoder.sandbox import ConfirmPolicy, SandboxManager
-    from corecoder.tools import sandbox_tool as st
+    from mycoder.sandbox import ConfirmPolicy, SandboxManager
+    from mycoder.tools import sandbox_tool as st
 
     async def _no_docker() -> bool:
         return False
@@ -104,7 +104,7 @@ def test_sandbox_blocks_destructive_commands(local_sandbox_tool):
 
 def test_sandbox_allows_non_destructive_rm():
     """The pre-check is a blacklist: non-destructive rm still reaches the sandbox."""
-    from corecoder.tools.bash import _check_dangerous
+    from mycoder.tools.bash import _check_dangerous
 
     assert _check_dangerous("rm -f notes.log") is None
     assert _check_dangerous("rm -r ./build_output") is None
@@ -113,7 +113,7 @@ def test_sandbox_allows_non_destructive_rm():
 
 def test_sandbox_chained_cd_resolves_sequentially(tmp_path):
     """`cd a && cd b` must end in a/b, not resolve both against the start dir."""
-    import corecoder.tools.bash as bash_mod
+    import mycoder.tools.bash as bash_mod
 
     (tmp_path / "a" / "b").mkdir(parents=True)
     saved = getattr(bash_mod._local, "cwd", None)
@@ -129,7 +129,7 @@ def test_sandbox_cwd_is_thread_local(tmp_path):
     """Parallel calls must not race on a shared cwd: each thread tracks its own."""
     import threading
 
-    import corecoder.tools.bash as bash_mod
+    import mycoder.tools.bash as bash_mod
 
     (tmp_path / "ta").mkdir()
     (tmp_path / "tb").mkdir()
@@ -164,7 +164,7 @@ def test_sandbox_truncates_long_output(local_sandbox_tool):
 def rooted_read(tmp_path):
     """A read_file instance scoped to a temp project root (PathGuard requires
     every read to stay inside the project)."""
-    from corecoder.tools.read_file import ReadFileTool
+    from mycoder.tools.read_file import ReadFileTool
 
     return ReadFileTool(project_root=tmp_path)
 

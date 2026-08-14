@@ -2,9 +2,9 @@
 
 import pytest
 
-from corecoder.mcp.config import enabled_servers, load_mcp_config
-from corecoder.mcp.errors import MCPStartupError
-from corecoder.mcp.security import MCPSecurityPolicy
+from mycoder.mcp.config import enabled_servers, load_mcp_config
+from mycoder.mcp.errors import MCPStartupError
+from mycoder.mcp.security import MCPSecurityPolicy
 
 _CONFIG = """\
 servers:
@@ -80,7 +80,7 @@ def test_path_traversal_blocked(tmp_path):
 
 def test_config_defaults_disabled(tmp_path):
     """The shipped default YAML has every server disabled (opt-in)."""
-    import corecoder.mcp.config as cfg
+    import mycoder.mcp.config as cfg
 
     path = cfg.DEFAULT_CONFIG_PATH
     assert path.exists()

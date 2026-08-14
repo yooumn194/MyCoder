@@ -1,6 +1,6 @@
 """Tests for list_files — glob-based file lookup within the project root."""
 
-from corecoder.tools.list_files import ListFilesTool
+from mycoder.tools.list_files import ListFilesTool
 
 
 def _tool(tmp_path):

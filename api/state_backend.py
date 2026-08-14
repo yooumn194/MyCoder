@@ -1,4 +1,4 @@
-"""State backends for the CoreCoder service layer.
+"""State backends for the MyCoder service layer.
 
 Sessions and blackboards must survive the stateless HTTP boundary, so every
 API request reads/writes through a StateBackend. Two implementations:
@@ -12,7 +12,7 @@ and every row is tokenized, embedded, deduplicated and decayed. Session and
 blackboard blobs are not memories; putting them there would pollute
 `memory_search`/`memory_list` and confuse confidence decay. So LocalStateBackend
 reuses the *same* SQLite approach (stdlib sqlite3, lazy connection, row_factory,
-project-root `.corecoder/` runtime dir) but keeps two dedicated tables.
+project-root `.mycoder/` runtime dir) but keeps two dedicated tables.
 
 Redis is imported lazily inside the constructor: a plain install without the
 `redis` client keeps local mode working, and `STATE_BACKEND=redis` fails fast
@@ -28,8 +28,8 @@ import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-_REDIS_SESSION_KEY = "corecoder:session:{id}"
-_REDIS_BLACKBOARD_KEY = "corecoder:blackboard:{id}"
+_REDIS_SESSION_KEY = "mycoder:session:{id}"
+_REDIS_BLACKBOARD_KEY = "mycoder:blackboard:{id}"
 _REDIS_TTL_SECONDS = 24 * 60 * 60
 _STATE_DB_NAME = "api_state.db"
 _DEFAULT_REDIS_URL = "redis://localhost:6379/0"
@@ -54,6 +54,11 @@ class StateBackend(ABC):
     async def save_blackboard(self, session_id: str, data: dict) -> None:
         """Persist the blackboard snapshot."""
 
+    @abstractmethod
+    async def list_sessions(self) -> list[dict]:
+        """Return every session record as {session_id, **data} — the source for
+        production run success-rate aggregation (P2)."""
+
 
 def _dump(data: dict) -> str:
     return json.dumps(data, ensure_ascii=False, default=str)
@@ -64,7 +69,7 @@ class LocalStateBackend(StateBackend):
 
     def __init__(self, project_dir: str | Path | None = None) -> None:
         root = Path(project_dir or os.getcwd()).expanduser().resolve()
-        self.path = root / ".corecoder" / _STATE_DB_NAME
+        self.path = root / ".mycoder" / _STATE_DB_NAME
         self._conn: sqlite3.Connection | None = None
         self._tables_ready = False
 
@@ -124,6 +129,14 @@ class LocalStateBackend(StateBackend):
         )
         conn.commit()
 
+    async def list_sessions(self) -> list[dict]:
+        conn = self._connect()
+        rows = conn.execute("SELECT session_id, data FROM sessions").fetchall()
+        return [
+            {"session_id": r["session_id"], **json.loads(r["data"])}
+            for r in rows
+        ]
+
 
 class RedisStateBackend(StateBackend):
     """Redis-backed backend (STATE_BACKEND=redis). Keys are namespaced so they
@@ -157,12 +170,32 @@ class RedisStateBackend(StateBackend):
             _REDIS_BLACKBOARD_KEY.format(id=session_id), _dump(data), ex=self.ttl
         )
 
+    async def list_sessions(self) -> list[dict]:
+        out: list[dict] = []
+        pattern = _REDIS_SESSION_KEY.format(id="*")
+        async for key in self._redis.scan_iter(match=pattern):
+            raw = await self._redis.get(key)
+            if raw:
+                sid = str(key).rsplit(":", 1)[-1]
+                try:
+                    out.append({"session_id": sid, **json.loads(raw)})
+                except (json.JSONDecodeError, TypeError):
+                    continue
+        return out
+
     async def ping(self) -> bool:
         """Used by /health; False on any connection error."""
         try:
             return bool(await self._redis.ping())
         except Exception:  # noqa: BLE001 - health probe must never raise
             return False
+
+    async def close(self) -> None:
+        """Close the Redis connection on process shutdown (#14)."""
+        try:
+            await self._redis.aclose()
+        except Exception:  # noqa: BLE001 - best-effort teardown
+            pass
 
 
 def create_state_backend(backend_type: str | None = None) -> StateBackend:

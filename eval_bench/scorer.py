@@ -235,7 +235,7 @@ def _table(header: list[str], rows: list[list]) -> str:
 
 def render_markdown(stats: dict, results: list[dict], env: dict) -> str:
     lines: list[str] = []
-    lines.append("# CoreCoder Eval Report")
+    lines.append("# MyCoder Eval Report")
     lines.append("")
     lines.append(f"- **Date:** {stats['generated_at']}")
     lines.append(f"- **Environment:** Python {env['python']}, OS {env['os']}, base_url {env['base_url']}")
@@ -305,7 +305,7 @@ def render_rich(stats: dict) -> None:
         print(f"Pass@1: {stats['pass_at_1'] * 100:.1f}% ({stats['passed']}/{stats['total']})")
         return
     console = Console()
-    table = Table(title=f"CoreCoder Eval — Pass@1 {stats['pass_at_1'] * 100:.1f}%")
+    table = Table(title=f"MyCoder Eval — Pass@1 {stats['pass_at_1'] * 100:.1f}%")
     for col in ("dimension", "value", "pass", "total", "rate"):
         table.add_column(col)
     for label, group in (("category", stats["by_category"]), ("difficulty", stats["by_difficulty"])):
@@ -333,7 +333,7 @@ def render_chart(stats: dict, out: Path) -> bool:
         plt.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 1, f"{rate:.0f}%", ha="center", va="bottom")
     plt.ylim(0, 105)
     plt.ylabel("Pass@1 (%)")
-    plt.title("CoreCoder Eval — Pass@1 by category")
+    plt.title("MyCoder Eval — Pass@1 by category")
     plt.tight_layout()
     plt.savefig(out)
     plt.close()

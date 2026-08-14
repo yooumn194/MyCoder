@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from corecoder.contracts import (
+from mycoder.contracts import (
     GeneralResult,
     parse_envelope,
 )

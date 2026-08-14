@@ -5,8 +5,8 @@ from unittest import mock
 
 import pytest
 
-from corecoder.llm import LLM, LiteLLM, LLMResponse
-from corecoder.config import Config
+from mycoder.llm import LLM, LiteLLM, LLMResponse
+from mycoder.config import Config
 
 
 # ---------------------------------------------------------------------------
@@ -209,12 +209,12 @@ class TestConfigProvider:
         assert config.provider == "openai"
 
     def test_provider_from_env(self):
-        with mock.patch.dict("os.environ", {"CORECODER_PROVIDER": "litellm"}, clear=False):
+        with mock.patch.dict("os.environ", {"MYCODER_PROVIDER": "litellm"}, clear=False):
             config = Config.from_env()
             assert config.provider == "litellm"
 
     def test_cli_picks_litellm_class(self):
-        from corecoder.llm import LiteLLM
+        from mycoder.llm import LiteLLM
         config = Config(provider="litellm", model="anthropic/claude-3-haiku", api_key="k")
         llm_cls = LiteLLM if config.provider == "litellm" else LLM
         assert llm_cls is LiteLLM

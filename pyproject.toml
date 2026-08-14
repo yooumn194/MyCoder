@@ -3,12 +3,12 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "corecoder"
+name = "mycoder"
 version = "0.4.0"
 description = "Minimal AI coding agent (~1,000 lines of Python) inspired by Claude Code. Works with any LLM. (formerly NanoCoder)"
 readme = "README.md"
 license = "MIT"
-# Floor is 3.11 because the sandbox executor (corecoder/sandbox) uses
+# Floor is 3.11 because the sandbox executor (mycoder/sandbox) uses
 # asyncio.TaskGroup (PEP 654, Python 3.11+); the project venv is 3.12.0.
 requires-python = ">=3.11"
 authors = [
@@ -37,7 +37,7 @@ dependencies = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["corecoder"]
+packages = ["mycoder"]
 
 [project.optional-dependencies]
 litellm = ["litellm>=1.60.0,<2.0.0"]
@@ -62,12 +62,12 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 
 [project.scripts]
-corecoder = "corecoder.cli:main"
+mycoder = "mycoder.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/he-yufeng/CoreCoder"
-Repository = "https://github.com/he-yufeng/CoreCoder"
-Issues = "https://github.com/he-yufeng/CoreCoder/issues"
+Homepage = "https://github.com/he-yufeng/MyCoder"
+Repository = "https://github.com/he-yufeng/MyCoder"
+Issues = "https://github.com/he-yufeng/MyCoder/issues"
 
 [tool.ruff]
 line-length = 130

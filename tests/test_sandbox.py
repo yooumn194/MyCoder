@@ -8,11 +8,12 @@ which skips itself when Docker is unavailable.
 
 import asyncio
 import subprocess
+import time
 from unittest import mock
 
 import pytest
 
-from corecoder.sandbox import (
+from mycoder.sandbox import (
     ALLOW_RISKY_ENV,
     ConfirmPolicy,
     DockerSandbox,
@@ -21,7 +22,7 @@ from corecoder.sandbox import (
     SandboxManager,
     WorkspaceSync,
 )
-from corecoder.sandbox.docker_executor import (
+from mycoder.sandbox.docker_executor import (
     MAX_HEAL_RETRIES,
     MAX_OOM_RETRIES,
     SandboxError,
@@ -30,8 +31,8 @@ from corecoder.sandbox.docker_executor import (
     _mem_limit,
     _pids_limit,
 )
-from corecoder.sandbox.local_executor import _leading_token
-from corecoder.tools import get_tool
+from mycoder.sandbox.local_executor import _leading_token
+from mycoder.tools import get_tool
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +162,7 @@ async def test_manager_backend_is_cached():
 def local_tool(monkeypatch, tmp_path):
     """The execute_in_sandbox tool pinned to the degraded local backend, with a
     permissive confirmation policy so unrelated tests never hang on a prompt."""
-    from corecoder.tools import sandbox_tool as st
+    from mycoder.tools import sandbox_tool as st
 
     manager = SandboxManager(
         project_dir=tmp_path,
@@ -248,7 +249,7 @@ async def test_policy_decide_approves_and_caches():
 
 
 async def test_policy_auto_allow_via_env(monkeypatch):
-    """CORECODER_ALLOW_RISKY_COMMANDS=1 skips prompts entirely (unattended)."""
+    """MYCODER_ALLOW_RISKY_COMMANDS=1 skips prompts entirely (unattended)."""
     monkeypatch.setenv(ALLOW_RISKY_ENV, "1")
 
     def _never_prompt(cmd: str, reason: str) -> str:
@@ -262,7 +263,7 @@ def test_default_confirmer_fails_closed_without_tty(monkeypatch):
     """No TTY -> denied: risky commands never run silently in CI/daemons."""
     import sys
 
-    from corecoder.sandbox.policy import _default_confirmer
+    from mycoder.sandbox.policy import _default_confirmer
 
     class _NoTTY:
         def isatty(self) -> bool:
@@ -276,7 +277,7 @@ def test_default_confirmer_keyboard_interrupt_denied(monkeypatch):
     """Ctrl+C during the prompt is a denial, never an approval."""
     import sys
 
-    from corecoder.sandbox.policy import _default_confirmer
+    from mycoder.sandbox.policy import _default_confirmer
 
     class _TTY:
         def isatty(self) -> bool:
@@ -290,7 +291,7 @@ def test_default_confirmer_keyboard_interrupt_denied(monkeypatch):
 def test_default_confirmer_approves_only_literal_y(monkeypatch):
     import sys
 
-    from corecoder.sandbox.policy import _default_confirmer
+    from mycoder.sandbox.policy import _default_confirmer
 
     class _TTY:
         def isatty(self) -> bool:
@@ -305,7 +306,7 @@ def test_default_confirmer_approves_only_literal_y(monkeypatch):
 
 async def test_confirm_timeout_returns_denied(monkeypatch):
     """A confirmer that hangs past the deadline resolves to denied (60s default)."""
-    import corecoder.sandbox.policy as policy_mod
+    import mycoder.sandbox.policy as policy_mod
 
     monkeypatch.setattr(policy_mod, "CONFIRM_TIMEOUT_SECONDS", 0.1)
 
@@ -323,7 +324,7 @@ async def test_confirm_timeout_audit_event(monkeypatch):
     """Timeout is recorded as a sandbox.confirm_timeout audit event."""
     from structlog.testing import capture_logs
 
-    import corecoder.sandbox.policy as policy_mod
+    import mycoder.sandbox.policy as policy_mod
 
     monkeypatch.setattr(policy_mod, "CONFIRM_TIMEOUT_SECONDS", 0.1)
 
@@ -352,7 +353,7 @@ def test_session_id_present_in_logs(tmp_path):
     import structlog
     from structlog.contextvars import get_contextvars
 
-    from corecoder.sandbox import logger as logger_mod
+    from mycoder.sandbox import logger as logger_mod
 
     m = SandboxManager(
         project_dir=tmp_path,
@@ -395,7 +396,7 @@ def test_session_id_unique_per_manager():
 # --- tool integration: the confirmation layer in execute() -----------------
 
 def test_tool_cancels_risky_command_without_confirmation(monkeypatch, tmp_path):
-    from corecoder.tools import sandbox_tool as st
+    from mycoder.tools import sandbox_tool as st
 
     manager = SandboxManager(
         project_dir=tmp_path,
@@ -416,7 +417,7 @@ def test_tool_cancels_risky_command_without_confirmation(monkeypatch, tmp_path):
 
 def test_denied_returns_alternative_hint(monkeypatch, tmp_path):
     """A denial tells the agent what to do instead (P1-3 guidance)."""
-    from corecoder.tools import sandbox_tool as st
+    from mycoder.tools import sandbox_tool as st
 
     manager = SandboxManager(
         project_dir=tmp_path,
@@ -434,7 +435,7 @@ def test_denied_returns_alternative_hint(monkeypatch, tmp_path):
 
 
 def test_tool_runs_risky_command_after_confirmation(monkeypatch, tmp_path):
-    from corecoder.tools import sandbox_tool as st
+    from mycoder.tools import sandbox_tool as st
 
     manager = SandboxManager(
         project_dir=tmp_path,
@@ -453,8 +454,8 @@ def test_tool_runs_risky_command_after_confirmation(monkeypatch, tmp_path):
 
 def test_tool_uses_policy_before_backend(monkeypatch, tmp_path):
     """A denied risky command must never reach the backend at all."""
-    import corecoder.sandbox as sandbox_mod
-    from corecoder.tools import sandbox_tool as st
+    import mycoder.sandbox as sandbox_mod
+    from mycoder.tools import sandbox_tool as st
 
     called = {"execute": False}
 
@@ -560,18 +561,18 @@ async def test_cache_cleared_on_new_manager():
 # ---------------------------------------------------------------------------
 
 def test_default_resource_limits(monkeypatch):
-    monkeypatch.delenv("CORECODER_SANDBOX_MEM", raising=False)
-    monkeypatch.delenv("CORECODER_SANDBOX_CPU", raising=False)
-    monkeypatch.delenv("CORECODER_SANDBOX_PIDS", raising=False)
+    monkeypatch.delenv("MYCODER_SANDBOX_MEM", raising=False)
+    monkeypatch.delenv("MYCODER_SANDBOX_CPU", raising=False)
+    monkeypatch.delenv("MYCODER_SANDBOX_PIDS", raising=False)
     assert _mem_limit() == "512m"
     assert _cpu_quota() == 50_000  # 0.5 core * 100000 period
     assert _pids_limit() == 128
 
 
 def test_custom_resource_limits_from_env(monkeypatch):
-    monkeypatch.setenv("CORECODER_SANDBOX_MEM", "2g")
-    monkeypatch.setenv("CORECODER_SANDBOX_CPU", "2")
-    monkeypatch.setenv("CORECODER_SANDBOX_PIDS", "256")
+    monkeypatch.setenv("MYCODER_SANDBOX_MEM", "2g")
+    monkeypatch.setenv("MYCODER_SANDBOX_CPU", "2")
+    monkeypatch.setenv("MYCODER_SANDBOX_PIDS", "256")
     assert _mem_limit() == "2g"
     assert _cpu_quota() == 200_000  # 2 cores * 100000 period
     assert _pids_limit() == 256
@@ -590,9 +591,9 @@ def test_create_container_uses_configured_limits(monkeypatch):
         def __init__(self):
             self.containers = _Containers()
 
-    monkeypatch.delenv("CORECODER_SANDBOX_MEM", raising=False)
-    monkeypatch.delenv("CORECODER_SANDBOX_CPU", raising=False)
-    monkeypatch.delenv("CORECODER_SANDBOX_PIDS", raising=False)
+    monkeypatch.delenv("MYCODER_SANDBOX_MEM", raising=False)
+    monkeypatch.delenv("MYCODER_SANDBOX_CPU", raising=False)
+    monkeypatch.delenv("MYCODER_SANDBOX_PIDS", raising=False)
     sbx = DockerSandbox(project_dir=".")
     sbx._docker = _FakeClient()
     sbx._create_container(sbx._docker)
@@ -609,7 +610,7 @@ def test_create_container_uses_configured_limits(monkeypatch):
 def test_local_executor_graduated_warnings(monkeypatch, tmp_path):
     """Warn once at construction, once on the first command, every 10 after —
     not on every command (banner fatigue is worse than not asking at all)."""
-    import corecoder.sandbox.local_executor as le
+    import mycoder.sandbox.local_executor as le
 
     logger = mock.Mock()
     monkeypatch.setattr(le, "logger", logger)
@@ -645,21 +646,21 @@ def test_local_executor_graduated_warnings(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_operator_id_default_and_env(monkeypatch):
-    from corecoder.sandbox.policy import _operator_id
+    from mycoder.sandbox.policy import _operator_id
 
-    monkeypatch.delenv("CORECODER_OPERATOR_ID", raising=False)
+    monkeypatch.delenv("MYCODER_OPERATOR_ID", raising=False)
     assert _operator_id() == "local_tty"
-    monkeypatch.setenv("CORECODER_OPERATOR_ID", "reviewer-42")
+    monkeypatch.setenv("MYCODER_OPERATOR_ID", "reviewer-42")
     assert _operator_id() == "reviewer-42"
 
 
 def test_confirm_audit_contains_operator_id(monkeypatch):
     """sandbox.confirm events carry operator_id for the approval trail."""
-    import corecoder.sandbox.policy as policy_mod
+    import mycoder.sandbox.policy as policy_mod
 
     logger = mock.Mock()
     monkeypatch.setattr(policy_mod, "logger", logger)
-    monkeypatch.setenv("CORECODER_OPERATOR_ID", "reviewer-42")
+    monkeypatch.setenv("MYCODER_OPERATOR_ID", "reviewer-42")
     p = ConfirmPolicy(confirmer=lambda cmd, reason: "denied")
     asyncio.run(p.decide("git push"))
 
@@ -727,7 +728,7 @@ class _FakeBackend:
         docker_diff=None,
         baseline: set[str] | None = None,
     ):
-        self._volume_name = "corecoder-ws-test"
+        self._volume_name = "mycoder-ws-test"
         self._container = (
             _FakeContainer(files or {}, docker_diff) if container else None
         )
@@ -782,6 +783,20 @@ async def test_copy_out_only_changed_files(tmp_path):
     assert (tmp_path / "b.txt").read_bytes() == b"bbb"
     # nothing else touched the host
     assert sorted(p.name for p in tmp_path.iterdir()) == ["a.txt", "b.txt"]
+
+
+async def test_sync_restarts_container_after_reap(tmp_path):
+    """#11: copy_out / diff restart a reaped container (volume survives) instead
+    of erroring — an idle-reap must not break a subsequent sync_workspace."""
+    calls: list[bool] = []
+
+    class _ReapBackend(_FakeBackend):
+        async def ensure_started(self):
+            calls.append(True)
+
+    sync = WorkspaceSync(host_project_dir=tmp_path, backend=_ReapBackend(git_status=""))
+    await sync.copy_out(clean=False)
+    assert calls  # container was restarted before copying
 
 
 async def test_copy_out_excludes_node_modules(tmp_path):
@@ -954,6 +969,198 @@ async def test_heal_gives_up_after_max_retries():
     with pytest.raises(SandboxError):
         await sbx._exec_resilient(["/bin/sh", "-c", "x"])
     assert sbx._restart.await_count == MAX_HEAL_RETRIES
+
+
+# ---------------------------------------------------------------------------
+# Idle auto-reaping (DockerSandbox idle_timeout)
+# ---------------------------------------------------------------------------
+
+class _FakeReapContainer:
+    id = "c-fake"
+
+    def start(self):
+        pass
+
+
+def _sandbox_with_fake_docker(idle_timeout: float = 0.0):
+    """A DockerSandbox whose docker I/O is faked; start()/execute() run offline."""
+    sbx = DockerSandbox(project_dir=".", idle_timeout=idle_timeout)
+    sbx._ensure_image = mock.AsyncMock()
+    sbx._create_container = mock.Mock(return_value=_FakeReapContainer())
+    sbx._provision_workspace = mock.AsyncMock()
+    sbx._snapshot_workspace_paths = mock.AsyncMock(return_value=set())
+    sbx._exec = mock.AsyncMock(return_value=ExecutionResult(exit_code=0, stdout="ok"))
+    sbx._teardown_container = mock.Mock()
+    sbx._remove_workspace_volume = mock.Mock()
+    sbx._client = mock.Mock(return_value=mock.Mock(close=mock.Mock()))
+    return sbx
+
+
+async def test_idle_disabled_arms_no_watchdog():
+    """idle_timeout=0 -> the reaper is never armed."""
+    sbx = _sandbox_with_fake_docker(idle_timeout=0)
+    await sbx.start()
+    try:
+        assert sbx._watchdog_thread is None
+    finally:
+        await sbx.stop()
+
+
+async def test_idle_enabled_arms_watchdog():
+    sbx = _sandbox_with_fake_docker(idle_timeout=60)
+    await sbx.start()
+    try:
+        assert sbx._watchdog_thread is not None
+        assert sbx._watchdog_thread.daemon
+        assert sbx._watchdog_thread.name == "mycoder-sandbox-idle"
+    finally:
+        await sbx.stop()
+
+
+async def test_idle_reaper_stops_container_keeps_volume():
+    """After idle_timeout without activity the container is stopped, the
+    workspace VOLUME is kept (idle reaping is NOT a full stop()), and the
+    docker client is closed."""
+    sbx = _sandbox_with_fake_docker(idle_timeout=0.3)
+    await sbx.start()
+    assert sbx._started
+    time.sleep(1.0)  # give the reaper its window
+    assert sbx._started is False
+    assert sbx._container is None
+    assert sbx._watchdog_thread is None
+    sbx._teardown_container.assert_called()
+    sbx._remove_workspace_volume.assert_not_called()  # volume survives
+
+
+async def test_activity_defers_reaping():
+    """A fresh execute() resets the idle clock, so the reaper never fires."""
+    sbx = _sandbox_with_fake_docker(idle_timeout=0.3)
+    await sbx.start()
+    for _ in range(5):
+        await sbx.execute("echo x")
+        time.sleep(0.2)
+    assert sbx._started  # still alive: activity kept coming
+    await sbx.stop()
+
+
+async def test_execute_after_idle_reap_restarts_transparently():
+    """After the reaper stops the container, the next execute() re-provisions
+    on the SAME volume — restart is seamless, work is not lost."""
+    sbx = _sandbox_with_fake_docker(idle_timeout=0.3)
+    await sbx.start()
+    start_calls = sbx._create_container.call_count
+    time.sleep(1.0)
+    assert not sbx._started  # reaped
+    r = await sbx.execute("echo x")
+    assert r.ok
+    assert sbx._started
+    assert sbx._create_container.call_count == start_calls + 1
+    await sbx.stop()
+
+
+async def test_execute_touches_last_activity():
+    sbx = _sandbox_with_fake_docker(idle_timeout=10)
+    await sbx.start()
+    sbx._last_activity = 0.0
+    await sbx.execute("echo x")
+    assert sbx._last_activity > 0.0
+    await sbx.stop()
+
+
+# ---------------------------------------------------------------------------
+# SandboxManager idle_timeout config
+# ---------------------------------------------------------------------------
+
+def test_manager_idle_timeout_reads_env(monkeypatch):
+    from mycoder.sandbox import executor as ex_mod
+
+    monkeypatch.delenv(ex_mod._IDLE_TIMEOUT_ENV, raising=False)
+    m = SandboxManager(project_dir=".")
+    assert m._idle_timeout == ex_mod._IDLE_TIMEOUT_DEFAULT
+
+    monkeypatch.setenv(ex_mod._IDLE_TIMEOUT_ENV, "120")
+    m = SandboxManager(project_dir=".")
+    assert m._idle_timeout == 120.0
+
+    monkeypatch.setenv(ex_mod._IDLE_TIMEOUT_ENV, "0")
+    m = SandboxManager(project_dir=".")
+    assert m._idle_timeout == 0.0  # explicit disable
+
+
+def test_manager_idle_timeout_invalid_env_falls_back(monkeypatch):
+    from mycoder.sandbox import executor as ex_mod
+
+    monkeypatch.setenv(ex_mod._IDLE_TIMEOUT_ENV, "not-a-number")
+    m = SandboxManager(project_dir=".")
+    assert m._idle_timeout == ex_mod._IDLE_TIMEOUT_DEFAULT
+
+
+async def test_manager_idle_timeout_reaches_docker_backend():
+    m = SandboxManager(
+        project_dir=".",
+        idle_timeout=7,
+        docker_available_check=_docker_check(True),
+    )
+    backend = await m.get()
+    assert isinstance(backend, DockerSandbox)
+    assert backend._idle_timeout == 7
+    await m.stop()
+
+
+# ---------------------------------------------------------------------------
+# CLI exit cleanup (auto-close on process exit)
+# ---------------------------------------------------------------------------
+
+def test_cli_exit_cleanup_stops_active_manager(monkeypatch):
+    """_cleanup_sandbox_on_exit stops the process-global manager, if any."""
+    from mycoder import cli
+
+    manager = mock.Mock()
+    monkeypatch.setattr(
+        "mycoder.sandbox.executor.get_active_manager", lambda: manager
+    )
+    cli._cleanup_sandbox_on_exit()
+    manager.stop_sync.assert_called_once()
+
+
+def test_cli_exit_cleanup_noop_without_manager(monkeypatch):
+    """No manager was created this run -> cleanup does nothing."""
+    from mycoder import cli
+
+    monkeypatch.setattr(
+        "mycoder.sandbox.executor.get_active_manager", lambda: None
+    )
+    cli._cleanup_sandbox_on_exit()  # must not raise
+
+
+def test_manager_stop_sync_reaches_backend(monkeypatch):
+    """stop_sync delegates to the backend's synchronous teardown."""
+    m = SandboxManager(
+        project_dir=".",
+        docker_available_check=_docker_check(True),
+    )
+    m._backend = mock.Mock(stop_sync=mock.Mock())
+    m.stop_sync()
+    m._backend.stop_sync.assert_called_once()
+
+
+def test_cli_register_exit_cleanup_hooks(monkeypatch):
+    """atexit + SIGTERM are wired; the SIGTERM handler routes to sys.exit."""
+    from mycoder import cli
+
+    atexit_mock = mock.Mock()
+    signal_mock = mock.Mock()
+    monkeypatch.setattr(cli, "atexit", atexit_mock)
+    monkeypatch.setattr(cli, "signal", signal_mock)
+
+    cli._register_exit_cleanup()
+
+    atexit_mock.register.assert_called_once()
+    signal_mock.signal.assert_called_once()
+    sig, handler = signal_mock.signal.call_args[0]
+    assert sig == signal_mock.SIGTERM
+    with pytest.raises(SystemExit):
+        handler(None, None)
 
 
 # ---------------------------------------------------------------------------

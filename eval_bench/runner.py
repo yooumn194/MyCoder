@@ -1,4 +1,4 @@
-"""Eval runner — black-box benchmark over the CoreCoder HTTP API.
+"""Eval runner — black-box benchmark over the MyCoder HTTP API.
 
 For each problem in dataset.json:
   1. write context_files into {workspace}/{id}/ (the agent edits these in place
@@ -263,7 +263,7 @@ def _result(problem, agent_status, tests_passed, tests_total, duration, token_us
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m eval_bench.runner", description=__doc__)
-    parser.add_argument("--base-url", default="http://localhost:8000", help="CoreCoder API base URL")
+    parser.add_argument("--base-url", default="http://localhost:8000", help="MyCoder API base URL")
     parser.add_argument("--dataset", default=str(Path(__file__).parent / "dataset.json"))
     parser.add_argument("--workspace", default=str(Path(__file__).parent / "workspace"))
     parser.add_argument("--results", default=None, help="output dir (default results/<timestamp>)")

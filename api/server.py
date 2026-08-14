@@ -1,4 +1,4 @@
-"""FastAPI service layer for CoreCoder.
+"""FastAPI service layer for MyCoder.
 
 Three endpoints + one background worker:
 
@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import re
 import uuid
+from collections import Counter
+from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
@@ -29,9 +31,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from structlog.contextvars import bind_contextvars
 
-from corecoder import __version__
-from corecoder.observability.budget import TokenBudgetExceeded, TokenBudgetGuard
-from corecoder.sandbox.logger import get_logger
+from mycoder import __version__
+from mycoder.observability.budget import TokenBudgetExceeded, TokenBudgetGuard
+from mycoder.sandbox.logger import get_logger
 
 from .dependencies import (
     get_default_llm,
@@ -40,11 +42,11 @@ from .dependencies import (
     get_tracer,
 )
 from .state_backend import RedisStateBackend, StateBackend
-from corecoder.observability.ratelimit import RateLimiter
+from mycoder.observability.ratelimit import RateLimiter
 
-logger = get_logger("corecoder.api")
+logger = get_logger("mycoder.api")
 
-# P2 rate limiting (opt-in): CORECODER_RATE_LIMIT=<requests/min>. A runaway
+# P2 rate limiting (opt-in): MYCODER_RATE_LIMIT=<requests/min>. A runaway
 # agent loop must not blow the provider's rate limit; 429 on breach.
 RATE_LIMITER: RateLimiter | None = RateLimiter.from_env()
 
@@ -52,7 +54,7 @@ RATE_LIMITER: RateLimiter | None = RateLimiter.from_env()
 # Structured error types raised by the service layer and handled globally.
 # (They are API-level exceptions; the underlying modules signal the same
 # conditions through envelope error codes, which the worker translates.)
-# TokenBudgetExceeded is the shared class from corecoder.observability.budget
+# TokenBudgetExceeded is the shared class from mycoder.observability.budget
 # (raised by TokenBudgetGuard); CircuitBreakerOpen / SandboxTimeout are API-level.
 # --------------------------------------------------------------------------
 class CircuitBreakerOpen(Exception):
@@ -68,7 +70,7 @@ _TIMEOUT_CODES = {"SUBAGENT_TIMEOUT"}
 _BUDGET_CODES = {"TOKEN_BUDGET_EXCEEDED"}
 
 # Default price table (USD per 1k tokens) for /v1/agent/cost. Mirrors the
-# input/output rates in corecoder/llm.py _PRICING (per 1M -> per 1k).
+# input/output rates in mycoder/llm.py _PRICING (per 1M -> per 1k).
 DEFAULT_PRICE_PER_1K: dict = {
     "gpt-5.5": {"input": 0.005, "output": 0.03},
     "gpt-5.4": {"input": 0.0025, "output": 0.015},
@@ -129,6 +131,17 @@ class CostResponse(BaseModel):
     cost: dict
 
 
+class MetricsResponse(BaseModel):
+    total_runs: int
+    completed: int
+    running: int
+    success: int
+    failed: int
+    success_rate: float
+    failure_rate: float
+    failure_distribution: dict
+
+
 # --------------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------------
@@ -145,7 +158,35 @@ def sanitize_session_id(session_id: str | None) -> str:
     return cleaned or uuid.uuid4().hex[:16]
 
 
-app = FastAPI(title="CoreCoder Service", version=__version__)
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Tear down the process-global sandbox when the server exits.
+
+    The implementer subagent can create a DockerSandbox through the same
+    module-global manager the CLI uses; without this, uvicorn's exit would
+    leave the container + workspace volume behind. Defensive: None when no
+    sandbox tool ever ran.
+    """
+    yield
+    from mycoder.sandbox.executor import get_active_manager
+
+    manager = get_active_manager()
+    if manager is not None:
+        await manager.stop()
+    # Close the state backend (Redis connection) so uvicorn's exit doesn't leak
+    # the pool (#14). getattr keeps backends without close (local) a no-op.
+    from .dependencies import get_state_backend
+
+    backend = get_state_backend()
+    close = getattr(backend, "close", None)
+    if close is not None:
+        try:
+            await close()
+        except Exception:  # noqa: BLE001 - teardown must never raise
+            pass
+
+
+app = FastAPI(title="MyCoder Service", version=__version__, lifespan=lifespan)
 
 
 async def _run_agent(
@@ -269,7 +310,7 @@ async def run(
     body: RunRequest,
     background_tasks: BackgroundTasks,
     state_backend: StateBackend = Depends(get_state_backend),
-    request: Request | None = None,
+    request: Request = None,  # type: ignore[assignment] - injected by FastAPI
 ) -> RunResponse:
     session_id = sanitize_session_id(body.session_id)
     bind_contextvars(session_id=session_id)
@@ -280,7 +321,7 @@ async def run(
     if get_default_llm() is None:
         raise HTTPException(
             status_code=503,
-            detail="no LLM configured: set CORECODER_API_KEY (or OPENAI_API_KEY)",
+            detail="no LLM configured: set MYCODER_API_KEY (or OPENAI_API_KEY)",
         )
     await state_backend.save_session(
         session_id,
@@ -322,6 +363,48 @@ async def health(
     if isinstance(state_backend, RedisStateBackend):
         redis_state = "connected" if await state_backend.ping() else "disconnected"
     return HealthResponse(status="ok", redis=redis_state, version=__version__)
+
+
+@app.get("/v1/agent/metrics", response_model=MetricsResponse)
+async def metrics(
+    state_backend: StateBackend = Depends(get_state_backend),
+) -> MetricsResponse:
+    """Production run success-rate aggregation (P2): every recorded session's
+    terminal status -> success rate / failure rate / failure distribution."""
+    sessions = await state_backend.list_sessions()
+    done = [s for s in sessions if s.get("status") in ("success", "failed")]
+    success = sum(1 for s in done if s.get("status") == "success")
+    failed = len(done) - success
+    dist = Counter(
+        (s.get("error") or {}).get("code", "UNKNOWN")
+        for s in done
+        if s.get("status") == "failed"
+    )
+    return MetricsResponse(
+        total_runs=len(sessions),
+        completed=len(done),
+        running=len(sessions) - len(done),
+        success=success,
+        failed=failed,
+        success_rate=round(success / len(done), 4) if done else 0.0,
+        failure_rate=round(failed / len(done), 4) if done else 0.0,
+        failure_distribution=dict(dist),
+    )
+
+
+@app.get("/v1/agent/report")
+async def monitor_report(
+    state_backend: StateBackend = Depends(get_state_backend),
+) -> dict:
+    """One monitor snapshot: LLM trace (latency/tokens/TTFT/cost/errors) +
+    production run success rate. The "监控报告" endpoint (P3)."""
+    from mycoder.observability.report import build_monitor_report
+
+    return build_monitor_report(
+        get_tracer(),
+        sessions=await state_backend.list_sessions(),
+        price_per_1k=DEFAULT_PRICE_PER_1K,
+    )
 
 
 @app.get("/v1/agent/cost/{session_id}", response_model=CostResponse)

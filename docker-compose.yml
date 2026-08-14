@@ -1,9 +1,9 @@
-# CoreCoder service-layer prototype: FastAPI + Redis session backend.
+# MyCoder service-layer prototype: FastAPI + Redis session backend.
 #
 #   docker compose up --build
 #   curl localhost:8000/health
 #
-# The api container reads the LLM key from the host env (CORECODER_API_KEY /
+# The api container reads the LLM key from the host env (MYCODER_API_KEY /
 # OPENAI_API_KEY); without a key /v1/agent/run returns 503.
 
 services:
@@ -14,7 +14,7 @@ services:
     environment:
       STATE_BACKEND: redis
       REDIS_URL: redis://redis:6379/0
-      CORECODER_API_KEY: ${CORECODER_API_KEY:-}
+      MYCODER_API_KEY: ${MYCODER_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
     depends_on:

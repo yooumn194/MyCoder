@@ -1,12 +1,12 @@
 """Tests for the Phase 4 evaluation system (Module D)."""
 
-from corecoder.eval import (
+from mycoder.eval import (
     FailureKnowledgeBase,
     FailurePattern,
     IncrementalDashboard,
     compute,
 )
-from corecoder.eval.metrics import (
+from mycoder.eval.metrics import (
     context_inflation_ratio,
     delegation_accuracy,
     lsp_adoption_rate,

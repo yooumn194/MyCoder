@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from corecoder.tools.grep_search import GrepSearchTool
+from mycoder.tools.grep_search import GrepSearchTool
 
 
 def _make_proj(tmp_path):
@@ -123,7 +123,7 @@ def test_rg_output_parsing(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr(
-        "corecoder.tools.grep_search.subprocess.run", lambda *a, **k: _FakeProc()
+        "mycoder.tools.grep_search.subprocess.run", lambda *a, **k: _FakeProc()
     )
     r = tool.execute(pattern="authenticate_user")
     assert "## src/auth/handler.py" in r
@@ -139,7 +139,7 @@ def test_timeout_returns_graceful(monkeypatch, tmp_path):
     def _slow_run(*args, **kwargs):
         raise subprocess.TimeoutExpired("rg", 30)
 
-    monkeypatch.setattr("corecoder.tools.grep_search.subprocess.run", _slow_run)
+    monkeypatch.setattr("mycoder.tools.grep_search.subprocess.run", _slow_run)
     r = tool.execute(pattern="foo")
     assert "搜索超时" in r
 

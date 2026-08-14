@@ -4,13 +4,13 @@ import json
 
 import pytest
 
-from corecoder.contracts import (
+from mycoder.contracts import (
     SubagentResultValidator,
     category_to_strategy,
     migrate_v0_1_to_v1_0,
     parse_result,
 )
-from corecoder.tools.agent import AgentTool
+from mycoder.tools.agent import AgentTool
 
 INSTANCE = "11111111-2222-3333-4444-555555555555"
 

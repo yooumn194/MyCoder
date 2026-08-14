@@ -1,6 +1,6 @@
 """Phase 4 end-to-end: Orchestrator + Blackboard + subagents sharing state."""
 
-from corecoder.agents import Blackboard, BUILTIN_SUBAGENTS, OrchestrationStrategy, Orchestrator, SubagentRunner
+from mycoder.agents import Blackboard, BUILTIN_SUBAGENTS, OrchestrationStrategy, Orchestrator, SubagentRunner
 
 
 async def test_phase4_end_to_end():
