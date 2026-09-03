@@ -1,10 +1,10 @@
 # MyCoder
 
-一个从零实现、零框架依赖的 AI 编程 Agent。核心就是一个 while 循环：让模型循环"思考 → 调工具 → 看结果"，直到任务完成。全部实现都在这个仓库里——从 agent 主循环到 Docker 沙箱、从混合检索记忆到多 Agent 编排、从三层安全护栏到完整的性能可观测。
+一个基于 [CoreCoder](https://github.com/he-yufeng/CoreCoder) 深度二次开发、不依赖 Agent 框架的 AI 编程 Agent。核心是让模型循环“思考 → 调工具 → 看结果”，并在此基础上补齐沙箱、记忆、多 Agent 编排、服务可靠性与性能可观测。
 
 **特性一览**
 
-- **自研 Agent 主循环**：不依赖 LangChain / CrewAI，工具循环、规划、纠错、防死循环全部手写
+- **框架无关 Agent 主循环**：不依赖 LangChain / CrewAI，工具循环、规划、纠错、防死循环均在仓库内实现
 - **Docker 沙箱隔离**：命令在只读根文件系统、无网络、丢弃全部 Linux 权限的容器里执行
 - **混合检索记忆**：BM25（jieba 分词）+ 语义向量（BGE）经 RRF 融合，跨会话持久
 - **多 Agent 编排**：子代理委派、RFC 信封、熔断自愈、动态重规划
@@ -20,8 +20,11 @@
 pip install -e .
 
 # 配置（任选一种 LLM）
-export MYCODER_API_KEY=sk-...            # 或 OPENAI_API_KEY
-export OPENAI_BASE_URL=https://api.deepseek.com   # OpenAI 兼容即可
+export OPENAI_API_KEY=sk-...
+
+# 或 OpenRouter（默认 minimax/minimax-m3:free）
+export MYCODER_PROVIDER=openrouter
+export OPENROUTER_API_KEY=sk-or-...
 
 # 构建沙箱镜像（一次）
 docker build -t mycoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/
@@ -53,7 +56,7 @@ pip install fastembed sqlite-vec   # 或 pip install -e '.[memory-embed,memory-v
         │  OpenAI 兼容 API · 流式 · 工具调用解析 · 自动重试
         ▼
 ③ 工具调用（mycoder/tools/）
-        │  26 个工具：沙箱执行 / 文件读写 / 搜索 / 记忆 / 子代理 / 规划
+        │  21 个内置工具：沙箱执行 / 文件读写 / 搜索 / 记忆 / 子代理 / 规划
         ▼
 ④ Docker 沙箱（mycoder/sandbox/）
         │  命令在隔离容器执行，/workspace 增量同步回宿主
@@ -72,7 +75,7 @@ pip install fastembed sqlite-vec   # 或 pip install -e '.[memory-embed,memory-v
 
 ### ① Agent 主循环
 
-`Agent.chat()` 是全部行为的核心，约 40 行：
+`Agent.chat()` 是全部行为的核心；抽去护栏、指标和纠错后，概念循环如下：
 
 ```python
 for _ in range(max_rounds):          # 防死循环：轮次上限
@@ -93,8 +96,8 @@ for _ in range(max_rounds):          # 防死循环：轮次上限
 ### ② LLM 推理层
 
 - 对接任意 OpenAI 兼容接口（`LLM` 类），也支持 LiteLLM 走 100+ 提供商
-- **流式输出**，并测量 TTFT（首 token 延迟）；token 用量精确统计（tiktoken 兜底估算）
-- 模型分级路由：简单子任务走 fast 档、复杂走 powerful 档（`config/model_routing.yaml` 规则）
+- **流式输出**，并测量 TTFT（首 token 延迟）；token 用量精确统计，单独记录 reasoning token（tiktoken 兜底估算）
+- provider-aware 模型分级路由：简单子任务走 fast 档、复杂走 powerful 档；限流、超时、模型不可用时只在同一 provider 内安全降级（`config/model_routing.yaml`）
 
 ### ③ 工具层
 
@@ -180,14 +183,32 @@ mem 512m · cpu 0.5 核 · pids 128（防 fork bomb）
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `MYCODER_MODEL` | `gpt-5.5` | 模型名 |
-| `MYCODER_API_KEY` / `OPENAI_API_KEY` | — | API 密钥 |
-| `OPENAI_BASE_URL` | — | OpenAI 兼容端点 |
+| `MYCODER_PROVIDER` | `openai` | `openai` / `deepseek` / `openrouter` / `ollama` / `litellm`；也会按专属密钥自动识别 |
+| `MYCODER_PROFILE` | — | 快速完整切换 provider；忽略遗留的通用 model/base URL，使用该 provider 默认配置 |
+| `MYCODER_MODEL` | provider 默认值 | 模型名；OpenRouter 默认 `minimax/minimax-m3:free` |
+| `MYCODER_<PROVIDER>_MODEL` | provider 默认值 | provider 专属模型覆盖，如 `MYCODER_OPENROUTER_MODEL`，只需配置一次 |
+| `MYCODER_<PROVIDER>_BASE_URL` | provider 默认值 | profile 模式下的 provider 专属端点覆盖 |
+| `MYCODER_API_KEY` | — | 通用显式密钥覆盖 |
+| `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY` | — | provider 专属 API 密钥 |
+| `MYCODER_BASE_URL` / `OPENAI_BASE_URL` | provider 默认值 | OpenAI 兼容端点；OpenRouter 自动使用 `https://openrouter.ai/api/v1` |
+| `OPENROUTER_SITE_URL` / `OPENROUTER_APP_NAME` | — | 可选的 OpenRouter 应用归属请求头 |
+| `MYCODER_CHECKPOINT_DIR` | `~/.mycoder/checkpoints` | API 编排计划与已完成步骤的 checkpoint 目录 |
+| `STATE_BACKEND` / `REDIS_URL` | `local` / `redis://localhost:6379/0` | `redis` 模式共享 session、job、lease、checkpoint、Trace、限流窗口和告警 |
+| `MYCODER_OBSERVABILITY_PATH` | `.mycoder/api_state.db` | local 模式 Trace/限流/告警 SQLite 路径；默认与 API 状态共库 |
+| `MYCODER_OBSERVABILITY_TTL_SECONDS` | `604800` | SQLite/Redis Trace、告警历史保留时间（秒） |
+| `MYCODER_OBSERVABILITY_MAX_ALERTS` | `10000` | SQLite/Redis 告警历史最大条数 |
+| `MYCODER_API_KEYS` | — | 租户 API key：JSON（`{"team":"secret"}`）或 `team=secret`；配置后 API 自动要求认证 |
+| `MYCODER_REQUIRE_AUTH` | `false` | 设为 `true` 可禁止无 key 的本地开发模式 |
+| `MYCODER_WORKSPACE_ROOT` | 服务 cwd | 认证租户工作区根；实际目录为 `<root>/<tenant>/<workspace_id>` |
+| `MYCODER_JOB_LEASE_SECONDS` | `60` | worker job/session lease，运行期间自动续租 |
+| `MYCODER_JOB_MAX_ATTEMPTS` | `3` | durable job 最大执行次数；超限后进入死信区 |
+| `MYCODER_JOB_RETRY_BASE_SECONDS` / `MYCODER_JOB_RETRY_MAX_SECONDS` | `1` / `30` | 带抖动指数退避的起始/上限秒数 |
+| `MYCODER_SSE_POLL_SECONDS` / `MYCODER_SSE_HEARTBEAT_SECONDS` | `0.25` / `15` | 结构化 SSE 状态采样与心跳间隔 |
 | `MYCODER_MAX_CONTEXT` | `128000` | 上下文窗口 |
 | `MYCODER_SANDBOX_MEM/CPU/PIDS` | `512m/0.5/128` | 沙箱资源 |
 | `MYCODER_SANDBOX_IDLE_TIMEOUT` | `600` | 沙箱空闲回收（秒，0 禁用） |
 | `MYCODER_SESSION_BUDGET` | `100000` | 会话 token 预算 |
-| `MYCODER_RATE_LIMIT` | 关 | API 限流（次/分） |
+| `MYCODER_RATE_LIMIT` | 关 | API 每 tenant+client 的请求/分钟；SQLite/Redis 跨 worker 原子共享 |
 | `MYCODER_INJECTION_GUARD` | `on` | 注入防御开关 |
 | `MYCODER_MODEL_TIER` | `standard` | 模型分级 |
 
@@ -195,11 +216,51 @@ mem 512m · cpu 0.5 核 · pids 128（防 fork bomb）
 
 ## 服务层（可选）
 
-`api/` 提供 FastAPI 服务：`POST /v1/agent/run` 后台跑任务、`/status` 查状态、`/cost` 查成本、`/metrics` 看成功率、`/report` 看监控快照。
+`api/` 提供 FastAPI 服务：`POST /v1/agent/run` 先持久化 job，再由带 lease 的 worker 执行；worker 被杀后任务会从 checkpoint 恢复，连续失败则按指数退避重试并最终进入 dead letter。`/status`、`/events`（SSE）、`/dead-letter`、`/alerts`、`/cost`、`/metrics`、`/report` 都按租户隔离；Trace、成本来源、限流窗口、告警 cooldown/历史在 SQLite 或 Redis 中跨 worker 共享。
+
+快速切换 provider 时不用修改 `.env` 中的 `MYCODER_MODEL`：
+
+```bash
+mycoder --provider openrouter
+MYCODER_PROFILE=deepseek uvicorn api.server:app
+```
+
+`MYCODER_PROFILE`/`--provider` 会整体选择 `_PROVIDER_DEFAULTS` 中的模型、端点和专属 Key。若某个 provider 需要固定非默认模型，只需一次性设置，例如 `MYCODER_OPENROUTER_MODEL=openai/gpt-oss-120b:free`。
 
 ```bash
 uvicorn api.server:app    # 或 docker compose up --build
+
+# 多 worker/生产模式（先安装 pip install -e '.[api]'）
+export STATE_BACKEND=redis REDIS_URL=redis://localhost:6379/0
+export MYCODER_API_KEYS='{"team-a":"replace-with-a-secret"}'
+mkdir -p team-a/repo-1  # 或把 MYCODER_WORKSPACE_ROOT 指向已有租户工作区根
+
+# 首次运行；每个成功/部分成功的子步骤会写 checkpoint
+curl -X POST http://localhost:8000/v1/agent/run \
+  -H 'Content-Type: application/json' \
+  -H 'X-API-Key: replace-with-a-secret' \
+  -d '{"task":"实现并验证功能","session_id":"job-1","workspace_id":"repo-1"}'
+
+# 失败或服务重启后，用同一 session_id + task 恢复；已完成步骤不会重跑
+curl -X POST http://localhost:8000/v1/agent/run \
+  -H 'Content-Type: application/json' \
+  -H 'X-API-Key: replace-with-a-secret' \
+  -d '{"task":"实现并验证功能","session_id":"job-1","workspace_id":"repo-1","resume":true}'
+
+# status.checkpoint 返回 completed_steps / remaining_steps
+curl -H 'X-API-Key: replace-with-a-secret' \
+  http://localhost:8000/v1/agent/status/job-1
+
+# SSE：progress / completed / failed 结构化事件；跨 worker 读取同一持久化状态
+curl -N -H 'X-API-Key: replace-with-a-secret' \
+  http://localhost:8000/v1/agent/events/job-1
+
+# 运维查看本租户死信任务
+curl -H 'X-API-Key: replace-with-a-secret' \
+  http://localhost:8000/v1/agent/dead-letter
 ```
+
+恢复请求会校验原 task，checkpoint 不存在返回 404、task 不一致或同 session 正在执行返回 409。任务成功后 checkpoint 自动清理；失败或进程中断时保留。
 
 ---
 
@@ -208,6 +269,10 @@ uvicorn api.server:app    # 或 docker compose up --build
 ```bash
 # 代码任务 Pass@1（黑盒 HTTP，需服务在跑）
 python -m eval_bench.runner && python -m eval_bench.scorer --results results/<run>
+
+# 固定 30 题 × 3 次 × 4 变体消融；输出 manifest、均值/标准差、失败分布
+python -m eval_bench.matrix --dry-run
+python -m eval_bench.matrix --base-url http://localhost:8000
 
 # RAG 检索指标（真实文档 + 金标准查询，离线）
 python -m eval_bench.rag_eval --doc README.md --queries eval_bench/rag_queries.json --compare --embedder config
@@ -219,11 +284,13 @@ python -m eval_bench.judge_run
 python -m eval_bench.loadtest --concurrency 4 --requests 20
 ```
 
+评测结果默认写入 gitignored 的 `results/`，避免把本地模型输出和个人分析材料发布到仓库。
+
 ---
 
 ## 致谢
 
-本项目由 [CoreCoder](https://github.com/he-yufeng/CoreCoder) 更名、二次开发而来。感谢原作者 he-yufeng 的开源贡献——正是它的设计给了 MyCoder 生长的土壤。
+本项目基于 [he-yufeng/CoreCoder](https://github.com/he-yufeng/CoreCoder) 深度二次开发，保留原项目 MIT License 与原作者署名；当前仓库由 [yooumn194](https://github.com/yooumn194) 维护。感谢原作者的开源贡献。
 
 ## License
 

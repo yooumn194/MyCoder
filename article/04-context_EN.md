@@ -4,11 +4,11 @@ An agent has one physical constraint it can't get around: the context window is 
 
 And coding tasks happen to be prolific token producers. The model reads a thousand-line file, and those thousand lines, line numbers and all, go into the history; it runs a test, and several hundred lines of output go into the history; it greps once, and dozens of matches go into the history. A halfway-decent task running a dozen-odd rounds burns tens of thousands of tokens. Once the window fills, either the API errors or you have to cut the history, and cut it badly and the agent starts "forgetting": a file it read earlier it reads again, a decision it just made it overturns.
 
-So fitting a long task into a finite window is one of the most hardcore subproblems in agent engineering. This piece looks at how `corecoder/context.py` (210 lines) solves it.
+So fitting a long task into a finite window is one of the most hardcore subproblems in agent engineering. This piece looks at how `mycoder/context.py` (210 lines) solves it.
 
 ## Layered, lightest to heaviest
 
-Claude Code's strategy is four layers in public teardowns, escalating from the cheapest handling to the most aggressive. CoreCoder distills it to three, same idea: space you can save with a cheap means, never spend an expensive means on. The three layers only trigger once the window hits certain proportions:
+Claude Code's strategy is four layers in public teardowns, escalating from the cheapest handling to the most aggressive. MyCoder distills it to three, same idea: space you can save with a cheap means, never spend an expensive means on. The three layers only trigger once the window hits certain proportions:
 
 ```python
 self._snip_at = int(max_tokens * 0.50)      # 50% -> snip bloated tool outputs
@@ -131,7 +131,7 @@ def _safe_split(messages: list[dict], keep_recent: int) -> int:
 
 Just one `while` loop walking back. The logic couldn't be shorter, but without it compression is a time bomb that stays quiet normally and goes off exactly during a long conversation, with the window tight, at the moment it least should. Both layer two and layer three go through `_safe_split` when cutting, never `len - keep_recent` directly.
 
-This trap is worth remembering, because it has every feature of a "hidden bug": it depends on an invariant spanning multiple messages (a tool must immediately follow its tool_calls), that invariant is written nowhere conspicuous, it doesn't trigger normally, and it only surfaces at the specific moment when "the cut point happens to land in the middle of a tool call." This kind of bug is hard to spot by staring at a single function; you have to hold both "the compression logic" and "the API's pairing constraint" in your head at once to realize they'll clash in some corner. CoreCoder nails this invariant down with two tests: `test_safe_split_never_orphans_a_tool_message` checks the cut point doesn't land on a tool, and `test_compress_never_leaves_an_orphan_tool_reply` checks that after a full round of compression every tool reply still immediately follows its tool_calls. Writing this kind of test is essentially solidifying an invariant hidden in your head into code, so nobody breaks it carelessly later.
+This trap is worth remembering, because it has every feature of a "hidden bug": it depends on an invariant spanning multiple messages (a tool must immediately follow its tool_calls), that invariant is written nowhere conspicuous, it doesn't trigger normally, and it only surfaces at the specific moment when "the cut point happens to land in the middle of a tool call." This kind of bug is hard to spot by staring at a single function; you have to hold both "the compression logic" and "the API's pairing constraint" in your head at once to realize they'll clash in some corner. MyCoder nails this invariant down with two tests: `test_safe_split_never_orphans_a_tool_message` checks the cut point doesn't land on a tool, and `test_compress_never_leaves_an_orphan_tool_reply` checks that after a full round of compression every tool reply still immediately follows its tool_calls. Writing this kind of test is essentially solidifying an invariant hidden in your head into code, so nobody breaks it carelessly later.
 
 ## Layer three: the last resort
 
@@ -139,7 +139,7 @@ When the window climbs to 90%, it means the first two layers didn't compress eno
 
 ## Compared with Claude Code
 
-The difference between four layers and three is mainly that Claude Code adds a cache-backed micro-compression (microcompact) and a periodic background auto-compression, more refined as engineering. But the core idea, "layered, lightest to heaviest, lazily triggered, compress the stale first," is identical in both. CoreCoder compresses it into three layers, just enough for you to see clearly what each layer solves and what it costs, without drowning in cache and scheduling details.
+The difference between four layers and three is mainly that Claude Code adds a cache-backed micro-compression (microcompact) and a periodic background auto-compression, more refined as engineering. But the core idea, "layered, lightest to heaviest, lazily triggered, compress the stale first," is identical in both. MyCoder compresses it into three layers, just enough for you to see clearly what each layer solves and what it costs, without drowning in cache and scheduling details.
 
 This piece also answers a question from the opening: why does an agent occasionally "forget"? Because it really does forget; compression is lossy, and the details summarized away are gone. A good compression strategy isn't about losing nothing, it's about losing smart, dropping the things that have run out of shelf life first.
 

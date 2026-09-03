@@ -35,7 +35,7 @@ def on_tool(name, kwargs):
 response = agent.chat(user_input, on_token=on_token, on_tool=on_tool)
 ```
 
-`on_token` makes the model's text surface in real time one piece at a time, which is what piece three's streaming layer looks like on the interface. `on_tool` prints a gray line before each tool call, telling you "it's about to read which file, run which command." These two callbacks are the only coupling point between the agent core and the interface; the core doesn't care how you display, it just shouts when an event should fire, and how the interface presents it is the interface's business. This "core emits events, shell handles presentation" split is clean, and to embed CoreCoder into another program (say a web service) you only swap these two callbacks, with the core untouched by a single line. Piece seven uses this property.
+`on_token` makes the model's text surface in real time one piece at a time, which is what piece three's streaming layer looks like on the interface. `on_tool` prints a gray line before each tool call, telling you "it's about to read which file, run which command." These two callbacks are the only coupling point between the agent core and the interface; the core doesn't care how you display, it just shouts when an event should fire, and how the interface presents it is the interface's business. This "core emits events, shell handles presentation" split is clean, and to embed MyCoder into another program (say a web service) you only swap these two callbacks, with the core untouched by a single line. Piece seven uses this property.
 
 ## Slash commands: managing state without breaking the conversation
 
@@ -87,11 +87,11 @@ Note the exit codes. Interrupted by Ctrl+C exits 130 (the conventional exit code
 
 Now for the thing in `session.py` I most want you to remember.
 
-Saving a session looks like the most harmless feature there is: dump `messages` and the model name to JSON and write it to disk, then load it back when reading. The filename uses the session id. The problem is exactly that id, which can come from the user. After `/save`, you resume with `corecoder -r <id>`, and that `<id>` is an arbitrary string the user types on the command line.
+Saving a session looks like the most harmless feature there is: dump `messages` and the model name to JSON and write it to disk, then load it back when reading. The filename uses the session id. The problem is exactly that id, which can come from the user. After `/save`, you resume with `mycoder -r <id>`, and that `<id>` is an arbitrary string the user types on the command line.
 
 Imagine the most naive implementation: `SESSIONS_DIR / f"{session_id}.json"`. What if the user (or some upstream program feeding it a session name) sets the id to `../../etc/passwd`? That path resolves outside the session directory, your "save session" becomes "write a file to an arbitrary location," and "read session" becomes "read an arbitrary file." This is the classic path-traversal vulnerability that countless real systems have fallen to.
 
-CoreCoder guards against it with two gates, defense in depth. The first regularizes the id into a safe, plain filename:
+MyCoder guards against it with two gates, defense in depth. The first regularizes the id into a safe, plain filename:
 
 ```python
 _SAFE_SESSION_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -138,7 +138,7 @@ A session file written halfway and cut off by a power loss shouldn't crash in yo
 
 ## Compared with Claude Code
 
-Claude Code's session and query engine (over a thousand lines in public teardowns) is far more complex; the state it manages, the terminal environments it accommodates, the concurrent sessions it handles are all far more numerous. But CoreCoder's version gathers what "a usable CLI agent" needs: streaming display, tool-event prompts, a set of state-managing commands, one-shot mode, session save and load, plus one proper line of security defense. The benefit of reading it is that you see in full where the seam between "core" and "shell" is, and how much a careful person thinks about behind a seemingly harmless feature (saving a session).
+Claude Code's session and query engine (over a thousand lines in public teardowns) is far more complex; the state it manages, the terminal environments it accommodates, the concurrent sessions it handles are all far more numerous. But MyCoder's version gathers what "a usable CLI agent" needs: streaming display, tool-event prompts, a set of state-managing commands, one-shot mode, session save and load, plus one proper line of security defense. The benefit of reading it is that you see in full where the seam between "core" and "shell" is, and how much a careful person thinks about behind a seemingly harmless feature (saving a session).
 
 ## What this piece leaves you with
 
@@ -148,4 +148,4 @@ Claude Code's session and query engine (over a thousand lines in public teardown
 - A session id can come from the user, and path traversal is a real threat. Meet it with defense in depth: one gate sanitizes input, one validates the landing spot, and the two differ in approach so they won't fail together.
 - Bad data should degrade quietly: a corrupt save returns `None`, don't slam the user with a traceback.
 
-The next piece is the finale, and the most hands-on: reassembling the parts dissected across these six pieces, walking you through forking CoreCoder into a coding agent that's genuinely your own.
+The next piece is the finale, and the most hands-on: reassembling the parts dissected across these six pieces, walking you through forking MyCoder into a coding agent that's genuinely your own.

@@ -2,7 +2,7 @@
 
 If I had only one sentence to explain a coding agent, I'd put it like this: it's a loop that keeps asking the model "what's next," does what the model says, reports the result back to the model, and repeats until the model says "no need to act, I have the answer."
 
-It sounds almost disappointingly plain. But that is the truth of it. Claude Code took this same thing and built it out to hundreds of thousands of lines, yet the most central piece, the part public teardowns call `query.ts`, is at its core a `while` loop of around seventeen hundred lines. CoreCoder writes the same loop in `corecoder/agent.py`, 150 lines including blanks and comments. The two have an identical shape; the only difference is you can read the latter in a single glance.
+It sounds almost disappointingly plain. But that is the truth of it. Claude Code took this same thing and built it out to hundreds of thousands of lines, yet the most central piece, the part public teardowns call `query.ts`, is at its core a `while` loop of around seventeen hundred lines. MyCoder writes the same loop in `mycoder/agent.py`, 150 lines including blanks and comments. The two have an identical shape; the only difference is you can read the latter in a single glance.
 
 In this piece we read that loop closely, section by section.
 
@@ -46,7 +46,7 @@ There's a detail here worth pausing on: the model decides when to stop. There is
 
 ## Why for, not while(true)
 
-Claude Code's loop is written as `while(true)`, relying on internal budget and error recovery to exit. CoreCoder writes it as `for _ in range(self.max_rounds)`, with `max_rounds` defaulting to 50.
+Claude Code's loop is written as `while(true)`, relying on internal budget and error recovery to exit. MyCoder writes it as `for _ in range(self.max_rounds)`, with `max_rounds` defaulting to 50.
 
 This isn't a style difference, it's a brake. Picture the model stuck in a loop it can't get itself out of: read a file, find it wrong, read again, still wrong, read again. With no cap it would keep burning your tokens until you hit Ctrl+C by hand or the bill makes you wince. The number 50 is empirical; normal tasks come nowhere near it, and if you do hit the cap, the loop returns that very restrained line, `(reached maximum tool-call rounds)`, handing control back to you.
 
@@ -54,7 +54,7 @@ Anyone about to put an LLM in a loop should make giving the loop a hard cap thei
 
 ## What a tool result looks like
 
-The model wants a tool, so we have to feed the execution result back in a format it recognizes. OpenAI's function-calling protocol says that if an `assistant` message carries `tool_calls`, it must be followed by an equal number of `tool` messages, each matching one call by `tool_call_id`. CoreCoder follows that to the letter:
+The model wants a tool, so we have to feed the execution result back in a format it recognizes. OpenAI's function-calling protocol says that if an `assistant` message carries `tool_calls`, it must be followed by an equal number of `tool` messages, each matching one call by `tool_call_id`. MyCoder follows that to the letter:
 
 ```python
 result = self._exec_tool(tc)
@@ -108,7 +108,7 @@ It's an instance-level dictionary, not a global table. On the main agent this ma
 
 In real use, a user hits Ctrl+C at any moment. The trouble is that Ctrl+C might land right in the middle, after the model has returned a batch of tool calls but before they've all finished running. At that point the history has an assistant message carrying `tool_calls` but missing some of the matching `tool` replies. Send that broken history out on the next request and an OpenAI-compatible API rejects it outright, because it violates the "every tool_call must have a paired reply" protocol. One interruption, and the whole session is poisoned.
 
-CoreCoder handles this by catching the exception inside the loop on purpose:
+MyCoder handles this by catching the exception inside the loop on purpose:
 
 ```python
 except KeyboardInterrupt:
@@ -138,9 +138,9 @@ This code isn't complicated, but it represents an important kind of engineering 
 
 ## Compared with Claude Code
 
-Put CoreCoder's 150 lines next to Claude Code's `query.ts` and you'll find the loop's skeleton almost overlaps: assemble messages, call the model with tools, execute when the model wants tools, backfill the results, loop again, and finish when the model returns text. This structure isn't something CoreCoder copied; it's the shared paradigm of this generation of coding agents, and anyone writing one ends up here.
+Put MyCoder's 150 lines next to Claude Code's `query.ts` and you'll find the loop's skeleton almost overlaps: assemble messages, call the model with tools, execute when the model wants tools, backfill the results, loop again, and finish when the model returns text. This structure isn't something MyCoder copied; it's the shared paradigm of this generation of coding agents, and anyone writing one ends up here.
 
-The real difference is the ring of protection around the loop. Claude Code's loop is wrapped in a far thicker layer of error recovery: back off and retry on rate limits, auto-compress and retry when context overflows, switch to a fallback model on a server-side 529, retry a few times when output gets truncated, plus finer budget control (counting both rounds and dollars). CoreCoder splits these out elsewhere: retry lives in [`llm.py`](03-llm-and-cost_EN.md), compression in [`context.py`](04-context_EN.md), and the budget is this file's `max_rounds`. Same shape, different thickness. The next several pieces in this series basically fill that protective ring back in, one layer at a time, showing what each layer is inside Claude Code and what it gets compressed into in CoreCoder.
+The real difference is the ring of protection around the loop. Claude Code's loop is wrapped in a far thicker layer of error recovery: back off and retry on rate limits, auto-compress and retry when context overflows, switch to a fallback model on a server-side 529, retry a few times when output gets truncated, plus finer budget control (counting both rounds and dollars). MyCoder splits these out elsewhere: retry lives in [`llm.py`](03-llm-and-cost_EN.md), compression in [`context.py`](04-context_EN.md), and the budget is this file's `max_rounds`. Same shape, different thickness. The next several pieces in this series basically fill that protective ring back in, one layer at a time, showing what each layer is inside Claude Code and what it gets compressed into in MyCoder.
 
 ## Wrapping up
 

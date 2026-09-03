@@ -1,6 +1,6 @@
-# Fork CoreCoder and build your own coding agent
+# Fork MyCoder and build your own coding agent
 
-Over the first six pieces we took CoreCoder apart all the way through. The loop, the tools, the model interface, context compression, parallelism, sub-agents, the CLI, every part laid out on the table. This piece puts them back together, and assembles them into one that's yours.
+Over the first six pieces we took MyCoder apart all the way through. The loop, the tools, the model interface, context compression, parallelism, sub-agents, the CLI, every part laid out on the table. This piece puts them back together, and assembles them into one that's yours.
 
 Between understanding and building sits a single act of doing. This piece carries you across. When you're done, you'll have in hand a coding agent that runs, plugs into the model you actually use, carries a tool you added yourself, and has been tuned to your temperament.
 
@@ -9,9 +9,9 @@ Between understanding and building sits a single act of doing. This piece carrie
 First confirm the starting point is good.
 
 ```bash
-# fork he-yufeng/CoreCoder to your own account on GitHub, then
-git clone https://github.com/<your-username>/CoreCoder
-cd CoreCoder
+# fork he-yufeng/MyCoder to your own account on GitHub, then
+git clone https://github.com/<your-username>/MyCoder
+cd MyCoder
 pip install -e .
 python -m pytest tests/ -q
 ```
@@ -20,7 +20,7 @@ That last line should show 86 tests all green. Don't skip this step. It confirms
 
 ## Step one: plug in your own model
 
-CoreCoder defaults to `gpt-5.5`, but you may not want to use it. Piece three covered this: switching models means switching environment variables. During development I strongly suggest a local Ollama first, costing nothing, free to mess with:
+MyCoder defaults to `gpt-5.5`, but you may not want to use it. Piece three covered this: switching models means switching environment variables. During development I strongly suggest a local Ollama first, costing nothing, free to mess with:
 
 ```bash
 # install Ollama, pull a coder model
@@ -28,9 +28,9 @@ ollama pull qwen2.5-coder
 
 export OPENAI_API_KEY=ollama
 export OPENAI_BASE_URL=http://localhost:11434/v1
-export CORECODER_MODEL=qwen2.5-coder
+export MYCODER_MODEL=qwen2.5-coder
 
-corecoder
+mycoder
 ```
 
 A local model is a notch weaker than a flagship, but it's more than enough for verifying "did my change keep the flow working," and it spares you from burning API money every time you debug a single tool. Once the logic is all correct, switch the environment variables to DeepSeek or something else and see the real effect.
@@ -39,7 +39,7 @@ A local model is a notch weaker than a flagship, but it's more than enough for v
 
 In piece two we added a `now` that checks the time, too trivial. This time add something useful: let the agent fetch the text content of a web page or an API. With it, your agent can go read online docs, check what an endpoint returns, and its abilities open right up.
 
-Create `corecoder/tools/fetch.py`:
+Create `mycoder/tools/fetch.py`:
 
 ```python
 """A read-only tool that fetches the text content of a URL."""
@@ -73,7 +73,7 @@ class FetchUrlTool(Tool):
         if not url.startswith(("http://", "https://")):
             return "Error: only http and https URLs are supported"
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "CoreCoder"})
+            req = urllib.request.Request(url, headers={"User-Agent": "MyCoder"})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 raw = resp.read(1_000_000)  # read at most 1MB so a giant page can't blow up memory
                 text = raw.decode("utf-8", errors="replace")
@@ -97,7 +97,7 @@ ALL_TOOLS = [
 ]
 ```
 
-Run it and ask "fetch https://raw.githubusercontent.com/he-yufeng/CoreCoder/main/README.md and tell me what this project does," and it'll call `fetch_url` and then explain it to you.
+Run it and ask "fetch https://raw.githubusercontent.com/he-yufeng/MyCoder/main/README.md and tell me what this project does," and it'll call `fetch_url` and then explain it to you.
 
 This little tool actually puts several lessons from the earlier pieces to use. Truncation keeping head and tail is the trick that recurred in pieces two and four. Decoding with `errors="replace"` and turning any exception into one line of plain language via a big try-except is also the "don't pass bad data's buck to the user" you've seen all along. And there's the one from piece five that matters most to take to heart: can your tool withstand being called concurrently? This `fetch_url` can, because it has no shared mutable state at all; each call brings its own URL and produces its own result, and two threads running it at once don't interfere. That isn't luck, it's design. A tool you can make stateless, don't add state to; that's the most effortless way to make your tool concurrency-safe by default.
 
@@ -105,7 +105,7 @@ But, just as piece two did with bash, I have to put one of this tool's soft spot
 
 ## Step three: tune its temperament
 
-An agent's behavioral style isn't in some if-else, it's in the system prompt. Open `corecoder/prompt.py`, and that `# Rules` block is your agent's "code of conduct." The original has a few:
+An agent's behavioral style isn't in some if-else, it's in the system prompt. Open `mycoder/prompt.py`, and that `# Rules` block is your agent's "code of conduct." The original has a few:
 
 ```
 1. Read before edit.
@@ -117,13 +117,13 @@ These rules directly shape how it works. Want it more cautious, add "ask for con
 
 ## Step four: not just a CLI, use it as a library
 
-CoreCoder's top level exports `Agent`, `LLM`, `Config`, which means you're not limited to its interactive terminal; you can use it as a library and build an agent of an entirely different form.
+MyCoder's top level exports `Agent`, `LLM`, `Config`, which means you're not limited to its interactive terminal; you can use it as a library and build an agent of an entirely different form.
 
 Here's an interesting example. Pieces one and five covered how each `Agent` only knows its own tool set. Exploiting this, we can assemble a "read-only" code-review agent that is physically incapable of changing your files or running commands, because we simply never gave it the write tool or bash:
 
 ```python
-from corecoder import Agent, LLM
-from corecoder.tools import get_tool
+from mycoder import Agent, LLM
+from mycoder.tools import get_tool
 
 llm = LLM(
     model="deepseek-chat",
@@ -139,7 +139,7 @@ reviewer = Agent(
 )
 
 report = reviewer.chat(
-    "Review corecoder/agent.py, find concurrency-related hazards, and list them."
+    "Review mycoder/agent.py, find concurrency-related hazards, and list them."
 )
 print(report)
 ```
@@ -165,13 +165,13 @@ I single out this step because it's the watershed between "dabbling" and "doing 
 
 ## Where you can go further
 
-CoreCoder is a starting point, not a destination. It deliberately leaves blanks in quite a few places, and every one is a direction you can build out, and the earlier pieces mostly named them by name:
+MyCoder is a starting point, not a destination. It deliberately leaves blanks in quite a few places, and every one is a direction you can build out, and the earlier pieces mostly named them by name:
 
 - **Put a real sandbox on bash.** Piece two said it plainly, the regex blocklist is only a guard against slips, not a security boundary. To face untrusted input, you need `seccomp` or container-level isolation.
-- **Add a fallback model and a hard dollar budget.** Piece three covered how CoreCoder deliberately skipped these two, because they drag in provider-specific logic. For a production deployment, these two eventually have to be added.
-- **Make concurrency finer-grained.** Piece five's point about distinguishing whether a tool "reads" or "writes" to decide whether it can run concurrently is something CoreCoder still doesn't do, and is worth filling in seriously.
+- **Add a fallback model and a hard dollar budget.** Piece three covered how MyCoder deliberately skipped these two, because they drag in provider-specific logic. For a production deployment, these two eventually have to be added.
+- **Make concurrency finer-grained.** Piece five's point about distinguishing whether a tool "reads" or "writes" to decide whether it can run concurrently is something MyCoder still doesn't do, and is worth filling in seriously.
 - **Hook up MCP.** Let your agent plug into the Model Context Protocol tool ecosystem, instantly connecting to a large batch of ready-made external capabilities.
-- **Give sub-agents more modes.** Piece five mentioned Claude Code's sub-agents can run in an independent worktree or in the background, while CoreCoder only did the most plain synchronous one.
+- **Give sub-agents more modes.** Piece five mentioned Claude Code's sub-agents can run in an independent worktree or in the background, while MyCoder only did the most plain synchronous one.
 
 Pick one you genuinely need and do it. Don't let the length of the list make you anxious; the charm of an agent is exactly that its core is small enough for one person to read through in a weekend, and its frontier is open enough that you can grow in any direction.
 
