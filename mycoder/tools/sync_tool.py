@@ -9,6 +9,7 @@ from ..sandbox import run_async
 from ..sandbox.logger import get_logger
 from .base import Tool
 from .sandbox_tool import _get_manager
+from ..sandbox import SandboxManager
 
 logger = get_logger()
 
@@ -50,8 +51,11 @@ class SyncWorkspaceTool(Tool):
         "required": [],
     }
 
+    def __init__(self, manager: SandboxManager | None = None) -> None:
+        self.manager = manager
+
     def execute(self, clean: bool = False) -> ToolResult:
-        sync = _get_manager().get_sync()
+        sync = (self.manager or _get_manager()).get_sync()
         if sync is None:
             # fail-closed: without a live Docker sandbox there is nothing to
             # sync, and we say so rather than silently succeeding.

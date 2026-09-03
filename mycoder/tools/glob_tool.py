@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from .base import Tool
+from .path_guard import PathGuard, PathTraversalError
 
 # TODO(Phase 4): once list_files (path-guarded, symlink-safe, default-excludes)
 # fully replaces this legacy tool in the agent's workflow, remove GlobTool and
@@ -10,6 +11,7 @@ from .base import Tool
 
 
 class GlobTool(Tool):
+    predictive_safe = True
     name = "glob"
     description = (
         "Find files matching a glob pattern. "
@@ -30,13 +32,29 @@ class GlobTool(Tool):
         "required": ["pattern"],
     }
 
+    def __init__(self, *, project_root=None) -> None:
+        self._project_root = Path(project_root).resolve() if project_root else None
+
     def execute(self, pattern: str, path: str = ".") -> str:
         try:
-            base = Path(path).expanduser().resolve()
+            guard = PathGuard(self._project_root) if self._project_root else None
+            base = (
+                guard.resolve(path)
+                if guard is not None
+                else Path(path).expanduser().resolve()
+            )
             if not base.is_dir():
                 return f"Error: {path} is not a directory"
 
-            hits = list(base.glob(pattern))
+            hits = []
+            for hit in base.glob(pattern):
+                if guard is None:
+                    hits.append(hit)
+                else:
+                    try:
+                        hits.append(guard.resolve(str(hit)))
+                    except PathTraversalError:
+                        continue
             # sort by mtime, newest first
             hits.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
 

@@ -20,3 +20,4 @@ venv/
 # eval_bench runtime artifacts
 results/
 eval_bench/workspace/
+workspaces/

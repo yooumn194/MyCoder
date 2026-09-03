@@ -171,7 +171,11 @@ class Agent:
             try:
 
                 def _predict(tc):
-                    predicted[tc.id] = pool.submit(self._exec_tool, tc)
+                    tool = self._tool_by_name.get(tc.name)
+                    # Speculation is deny-by-default. Idempotent writes are not
+                    # enough: they may still expose partial model arguments.
+                    if tool is not None and getattr(tool, "predictive_safe", False):
+                        predicted[tc.id] = pool.submit(self._exec_tool, tc)
 
                 resp = self.llm.chat(
                     messages=self._full_messages(),
@@ -222,13 +226,17 @@ class Agent:
 
     def _guard_tool_result(self, name: str, result: str) -> str:
         """Fast-scan a tool result for injection; a hit replaces it with a
-        notice so the malicious text never reaches the model. Only the regex
-        scan runs here (tool dumps are large) — the LLM classifier is reserved
-        for user input, where it is cheap.
+        notice so the malicious text never reaches the model. A broad cue scan
+        gates the semantic classifier, catching indirect attacks without adding
+        an LLM call for every ordinary tool result.
         """
         if self._injection is None:
             return result
-        blocked, reason = self._injection.defend(result, use_classifier=False)
+        blocked, reason = self._injection.defend(
+            result,
+            use_classifier=True,
+            classifier_on_suspicious_only=True,
+        )
         if blocked:
             return f"⚠ 工具 {name} 输出疑似包含指令注入，已隔离：{reason}"
         return result

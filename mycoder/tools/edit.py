@@ -10,6 +10,8 @@ import difflib
 from pathlib import Path
 
 from .base import Tool
+from .path_guard import PathGuard
+from .workspace_path import resolve_workspace_path
 
 # track files changed this session for /diff
 _changed_files: set[str] = set()
@@ -41,9 +43,20 @@ class EditFileTool(Tool):
         "required": ["file_path", "old_string", "new_string"],
     }
 
+    def __init__(self, *, project_root: Path | str | None = None) -> None:
+        self._project_root = Path(project_root).resolve() if project_root else None
+
     def execute(self, file_path: str, old_string: str, new_string: str) -> str:
         try:
-            p = Path(file_path).expanduser().resolve()
+            if self._project_root is None:
+                p = Path(resolve_workspace_path(file_path))
+            else:
+                raw = Path(file_path)
+                if file_path == "/workspace" or file_path.startswith("/workspace/"):
+                    raw = self._project_root / raw.relative_to("/workspace")
+                elif not raw.is_absolute():
+                    raw = self._project_root / raw
+                p = PathGuard(self._project_root).resolve(str(raw))
             if not p.exists():
                 return f"Error: {file_path} not found"
 

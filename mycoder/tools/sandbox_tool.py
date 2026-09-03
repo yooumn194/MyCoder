@@ -82,6 +82,14 @@ class ExecuteInSandboxTool(Tool):
         "required": ["command"],
     }
 
+    def __init__(self, manager: SandboxManager | None = None) -> None:
+        self.manager = manager
+
+    def _manager(self) -> SandboxManager:
+        # Instance-bound managers are used by the API for tenant/workspace
+        # isolation. CLI callers retain the historical process-global manager.
+        return self.manager or _get_manager()
+
     def execute(self, command: str, timeout: int = 30) -> str:
         timeout = min(max(int(timeout), 1), 600)
 
@@ -103,7 +111,7 @@ class ExecuteInSandboxTool(Tool):
         # at the tool boundary — so it guards BOTH backends: the Docker sandbox
         # and, more importantly, the degraded local executor that can reach the
         # host network.
-        allowed, rule = run_async(_get_policy().decide(command))
+        allowed, rule = run_async(self._manager().policy.decide(command))
         if not allowed:
             hint = ALTERNATIVE_HINTS.get(rule.category, "请调整命令")
             return (
@@ -114,23 +122,25 @@ class ExecuteInSandboxTool(Tool):
             )
 
         try:
-            result = run_async(_get_manager().execute(command, timeout))
+            result = run_async(self._manager().execute(command, timeout))
         except Exception as e:  # backend failure surfaces as a plain error
             return f"Error executing in sandbox: {e}"
         out = _format(result, command)
         if result.ok:
-            out += _changed_files_suffix(command)
+            out += _changed_files_suffix(command, manager=self._manager())
         return out
 
 
-def _changed_files_suffix(command: str) -> str:
+def _changed_files_suffix(
+    command: str, manager: SandboxManager | None = None
+) -> str:
     """Which /workspace files changed (from docker diff), appended to output.
 
     Never copies files out — that is sync_workspace()'s job. The list is
     truncated to 50 entries with a total count so an npm-install-sized change
     set doesn't flood the context.
     """
-    sync = _get_manager().get_sync()
+    sync = (manager or _get_manager()).get_sync()
     suffix = ""
     if sync is not None:
         try:

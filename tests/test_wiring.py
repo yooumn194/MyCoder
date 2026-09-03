@@ -78,6 +78,7 @@ def test_api_orchestrator_builder_carries_model_factory():
     orch = builder("session-x", llm=_FakeLLM(model="std-model"))
     assert orch.model_factory is not None
     assert orch._experience_store is not None  # #8: API re-plan experience lands
+    assert orch._checkpoint_store is not None  # API runs persist resumable progress
 
 
 # ------------------------------------------------- 4. agentic RAG (default)

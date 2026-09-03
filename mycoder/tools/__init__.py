@@ -1,5 +1,9 @@
 """Tool registry."""
 
+from pathlib import Path
+
+from ..sandbox import SandboxManager
+
 from .read_file import ReadFileTool
 from .write import WriteFileTool
 from .edit import EditFileTool
@@ -63,3 +67,40 @@ def get_tool(name: str):
         if t.name == name:
             return t
     return None
+
+
+def build_scoped_tools(
+    project_root: str | Path,
+    session_id: str,
+) -> tuple[list, SandboxManager]:
+    """Build a fresh, workspace-bound registry for one API run.
+
+    File tools share a canonical root and sandbox/sync share one manager, so
+    neither mutable tool state nor filesystem authority crosses sessions.
+    """
+    root = Path(project_root).resolve()
+    manager = SandboxManager(project_dir=root, session_id=session_id)
+    tools = [
+        ExecuteInSandboxTool(manager),
+        SyncWorkspaceTool(manager),
+        GrepSearchTool(project_root=root),
+        ListFilesTool(project_root=root),
+        ReadFileTool(project_root=root),
+        WriteFileTool(project_root=root),
+        EditFileTool(project_root=root),
+        GlobTool(project_root=root),
+        GrepTool(project_root=root),
+        AgentTool(),
+        FetchUrlTool(),
+        TodoWriteTool(),
+        TodoUpdateTool(),
+        SpawnSubagentTool(),
+        MemorySaveTool(),
+        MemorySearchTool(),
+        MemoryListTool(),
+        MemoryForgetTool(),
+        MemoryConfirmTool(),
+        MemoryCorrectTool(),
+        MemoryStatsTool(),
+    ]
+    return tools, manager

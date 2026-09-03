@@ -19,6 +19,12 @@ class Tool(ABC):
     #            deduped, so a retry can't double-apply a side effect.
     idempotent: bool = True
 
+    # Predictive execution starts before the model response has finished. It is
+    # therefore stricter than idempotency: only tools that are explicitly
+    # read-only and safe to run speculatively may opt in. The conservative
+    # default prevents a partially generated tool call from mutating state.
+    predictive_safe: bool = False
+
     @abstractmethod
     def execute(self, **kwargs) -> str:
         """Run the tool and return a text result."""

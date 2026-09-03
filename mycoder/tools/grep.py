@@ -3,6 +3,7 @@
 import re
 from pathlib import Path
 from .base import Tool
+from .path_guard import PathGuard, PathTraversalError
 
 # skip these dirs to avoid noise
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".tox", "dist", "build"}
@@ -14,6 +15,7 @@ _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".tox", "d
 
 
 class GrepTool(Tool):
+    predictive_safe = True
     name = "grep"
     description = (
         "Search file contents with regex. "
@@ -38,13 +40,22 @@ class GrepTool(Tool):
         "required": ["pattern"],
     }
 
+    def __init__(self, *, project_root=None) -> None:
+        self._project_root = Path(project_root).resolve() if project_root else None
+
     def execute(self, pattern: str, path: str = ".", include: str | None = None) -> str:
         try:
             regex = re.compile(pattern)
         except re.error as e:
             return f"Invalid regex: {e}"
 
-        base = Path(path).expanduser().resolve()
+        if self._project_root is None:
+            base = Path(path).expanduser().resolve()
+        else:
+            try:
+                base = PathGuard(self._project_root).resolve(path)
+            except PathTraversalError as exc:
+                return f"Error: {exc}"
         if not base.exists():
             return f"Error: {path} not found"
 

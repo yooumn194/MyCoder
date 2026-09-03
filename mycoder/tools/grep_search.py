@@ -41,6 +41,7 @@ class _SearchError(Exception):
 
 
 class GrepSearchTool(Tool):
+    predictive_safe = True
     name = "grep_search"
     description = (
         "Regex-search the project, matches grouped by file with line numbers. "
@@ -130,6 +131,8 @@ class GrepSearchTool(Tool):
             "--no-heading",
             "--line-number",
             "--with-filename",
+            "--sort",
+            "path",
             "--color",
             "never",
         ]
@@ -167,7 +170,11 @@ class GrepSearchTool(Tool):
                 continue
             total += 1
             if len(matches) < max_results:
-                matches.append((line[:first], lineno, line[second + 1 :]))
+                # Searching from "." makes some rg versions prefix paths with
+                # "./". Normalise to the same project-relative POSIX form used
+                # by the Python fallback and the file tools.
+                rel = Path(os.path.normpath(line[:first])).as_posix()
+                matches.append((rel, lineno, line[second + 1 :]))
         return matches, total, total > max_results
 
     def _py_search(self, pattern, search_root, project_root, types, max_results, case_sensitive):
@@ -179,8 +186,8 @@ class GrepSearchTool(Tool):
 
         matches, total, files_seen = [], 0, 0
         for dirpath, dirnames, filenames in os.walk(search_root):
-            dirnames[:] = [d for d in dirnames if d not in _PRUNED_DIRS]
-            for fname in filenames:
+            dirnames[:] = sorted(d for d in dirnames if d not in _PRUNED_DIRS)
+            for fname in sorted(filenames):
                 if types and Path(fname).suffix.lstrip(".") not in types:
                     continue
                 files_seen += 1
@@ -196,7 +203,7 @@ class GrepSearchTool(Tool):
                     with open(fpath, "r", encoding="utf-8", errors="replace") as fh:
                         for lineno, line in enumerate(fh, 1):
                             if regex.search(line):
-                                rel = os.path.relpath(fpath, project_root)
+                                rel = Path(os.path.relpath(fpath, project_root)).as_posix()
                                 total += 1
                                 if len(matches) < max_results:
                                     matches.append((rel, lineno, line.rstrip("\n")))

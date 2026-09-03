@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 
+_FORMAT_CHARACTERS = {"Cf"}
 # ---------------------------------------------------------------------------
 # Pre-LLM: injection fast scan + LLM classifier
 # ---------------------------------------------------------------------------
@@ -47,16 +49,33 @@ _INJECTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     (
         "ignore_instructions_en",
-        re.compile(r"ignore\s+(?:all\s+)?(?:previous|prior|above|earlier|system|developer).{0,15}instructions?"),
+        re.compile(
+            r"ignore\s+(?:all\s+)?(?:previous|prior|above|earlier|system|developer).{0,15}instructions?",
+            re.IGNORECASE,
+        ),
     ),
     (
         "disregard_previous_en",
-        re.compile(r"(?:disregard|forget)\s+(?:all\s+)?(?:previous|above|earlier)\b"),
+        re.compile(
+            r"(?:disregard|forget)\s+(?:all\s+)?(?:previous|above|earlier)\b",
+            re.IGNORECASE,
+        ),
     ),
     (
         "leak_system_prompt_en",
-        re.compile(r"(?:reveal|output|print|repeat)\s+(?:your\s+)?(?:system\s+)?prompt\b"),
+        re.compile(
+            r"(?:reveal|output|print|repeat)\s+(?:your\s+)?(?:system\s+)?prompt\b",
+            re.IGNORECASE,
+        ),
     ),
+)
+
+# A broader, non-blocking first stage for indirect tool-output injection. A cue
+# only decides whether to call the semantic classifier; it never blocks alone.
+_SUSPICIOUS_CUE = re.compile(
+    r"(?:instruction|system|developer|assistant|prompt|role|credential|secret|"
+    r"指令|系统|开发者|助手|提示词|角色|凭证|密钥)",
+    re.IGNORECASE,
 )
 
 _CLASSIFIER_PROMPT = """\
@@ -84,6 +103,16 @@ def _extract_json(raw: str) -> dict:
         return {}
 
 
+def _canonicalize(text: str) -> str:
+    """Collapse Unicode compatibility forms and remove invisible format chars.
+
+    This closes simple full-width/zero-width bypasses without changing the
+    original text passed to the semantic classifier.
+    """
+    normalized = unicodedata.normalize("NFKC", text)
+    return "".join(ch for ch in normalized if unicodedata.category(ch) not in _FORMAT_CHARACTERS)
+
+
 class InjectionDetector:
     """Decides whether input text carries an injection attempt.
 
@@ -100,8 +129,9 @@ class InjectionDetector:
         """First matching injection rule id, or None when clean."""
         if not text:
             return None
+        candidate = _canonicalize(text)
         for rule_id, pattern in _INJECTION_PATTERNS:
-            if pattern.search(text):
+            if pattern.search(candidate):
                 return rule_id
         return None
 
@@ -111,21 +141,40 @@ class InjectionDetector:
         *,
         use_classifier: bool = True,
         max_classify_chars: int = 4000,
+        classifier_on_suspicious_only: bool = False,
     ) -> tuple[bool, str]:
         """Return (blocked, reason). Regex first (zero cost); the LLM
-        classifier only runs when regex misses and the text is short enough —
-        cheap on user messages, skipped for huge tool dumps."""
+        classifier runs when regex misses and the text is short enough. Tool
+        outputs can request ``classifier_on_suspicious_only`` so clean results
+        do not add an LLM round-trip. For a long suspicious result, only a
+        bounded window around the first cue is classified, preventing padding
+        bypasses without sending the whole document."""
         hit = self.fast_scan(text)
         if hit:
             return True, f"注入模式命中 ({hit})"
+
+        classifier_text: str | None = None
+        if text:
+            if classifier_on_suspicious_only:
+                normalized = _canonicalize(text)
+                cue = _SUSPICIOUS_CUE.search(normalized)
+                if cue is not None:
+                    if len(normalized) <= max_classify_chars:
+                        classifier_text = text
+                    else:
+                        half_window = max(1, max_classify_chars // 2)
+                        start = max(0, cue.start() - half_window)
+                        classifier_text = normalized[start : start + max_classify_chars]
+            elif len(text) <= max_classify_chars:
+                classifier_text = text
+
         if (
             use_classifier
             and self._classifier is not None
-            and text
-            and len(text) <= max_classify_chars
+            and classifier_text is not None
         ):
             try:
-                if self._classifier(text):
+                if self._classifier(classifier_text):
                     return True, "注入分类器判定为恶意"
             except Exception:  # noqa: BLE001 - classifier is best-effort
                 pass
@@ -161,7 +210,9 @@ def build_injection_classifier(llm):
             response_format={"type": "json_object"},
         )
         data = _extract_json(str(getattr(resp, "content", "")))
-        return bool(data.get("injection"))
+        verdict = data.get("injection")
+        # Do not treat malformed strings such as "false" as truthy.
+        return verdict is True or (isinstance(verdict, str) and verdict.lower() == "true")
 
     return classify
 
@@ -174,8 +225,10 @@ def build_injection_classifier(llm):
 # that are *unambiguously* secrets (long sk-… bodies, Bearer credentials, PEM
 # blocks), so legitimate prose containing "password: x" or "api key" is kept.
 _OUTPUT_REDACT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"sk-[a-zA-Z0-9]{20,}"), "[REDACTED:API_KEY]"),
+    (re.compile(r"sk-[A-Za-z0-9_-]{20,}"), "[REDACTED:API_KEY]"),
+    (re.compile(r"(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{30,})"), "[REDACTED:GITHUB_TOKEN]"),
     (re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*"), "[REDACTED:BEARER]"),
+    (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED:AWS_ACCESS_KEY]"),
     (
         re.compile(
             r"-----BEGIN [^-]+PRIVATE KEY-----.*?-----END [^-]+PRIVATE KEY-----",

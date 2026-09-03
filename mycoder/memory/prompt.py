@@ -16,11 +16,11 @@ MAX_MEMORY_TOKENS = 2048
 _SECTION_HEADER = "📚 跨会话记忆（来自历史会话，供参考）:"
 _TRAILER = "以上记忆仅作参考，与当前任务冲突时以本次对话为准。"
 
-try:  # optional: precise token counts when tiktoken is installed
+try:  # optional: precise token counts when tiktoken is installed and usable
     import tiktoken
 
     _ENCODER = tiktoken.get_encoding("cl100k_base")
-except ImportError:  # pragma: no cover - graceful char-heuristic fallback
+except Exception:  # noqa: BLE001 - cache/download failures must also degrade
     _ENCODER = None
 
 

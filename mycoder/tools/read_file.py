@@ -20,6 +20,7 @@ MAX_LINES = 300
 
 
 class ReadFileTool(Tool):
+    predictive_safe = True
     name = "read_file"
     description = (
         "Read a file with line numbers (format: ' 42 | line'). At most 300 "
@@ -62,7 +63,12 @@ class ReadFileTool(Tool):
             #    absolute /workspace/... paths are mapped onto the host project
             p = Path(file_path)
             if p.is_absolute():
-                p = Path(resolve_workspace_path(str(p)))
+                if self._project_root and (
+                    file_path == "/workspace" or file_path.startswith("/workspace/")
+                ):
+                    p = root / p.relative_to("/workspace")
+                else:
+                    p = Path(resolve_workspace_path(str(p)))
             else:
                 p = root / p
             # 2. path guard: the canonical path must stay inside the project
