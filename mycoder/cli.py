@@ -14,10 +14,10 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 
 from .agent import Agent
+from .agent_factory import AgentFactory
 from .tools import ALL_TOOLS
-from .tools.selector import ToolSelector
 from .llm import LLM, LiteLLM
-from .config import Config
+from .config import Config, PROVIDERS
 from .session import save_session, load_session, list_sessions
 from . import __version__
 
@@ -29,7 +29,12 @@ def _parse_args():
         prog="mycoder",
         description="Minimal AI coding agent. Works with any OpenAI-compatible LLM.",
     )
-    p.add_argument("-m", "--model", help="Model name (default: $MYCODER_MODEL or gpt-5.5)")
+    p.add_argument("-m", "--model", help="Model name (default: selected provider profile)")
+    p.add_argument(
+        "--provider",
+        choices=PROVIDERS,
+        help="Provider profile; selects its key, default model and base URL",
+    )
     p.add_argument("--base-url", help="API base URL (default: $OPENAI_BASE_URL)")
     p.add_argument("--api-key", help="API key (default: $OPENAI_API_KEY)")
     p.add_argument("-p", "--prompt", help="One-shot prompt (non-interactive mode)")
@@ -98,11 +103,12 @@ def _register_exit_cleanup() -> None:
 def main():
     _register_exit_cleanup()
     args = _parse_args()
-    config = Config.from_env()
+    config = Config.from_env(
+        provider_override=args.provider,
+        model_override=args.model,
+    )
 
     # CLI args override env vars
-    if args.model:
-        config.model = args.model
     if args.base_url:
         config.base_url = args.base_url
     if args.api_key:
@@ -111,10 +117,14 @@ def main():
     if not config.api_key:
         console.print("[red bold]No API key found.[/]")
         console.print(
-            "Set one of: OPENAI_API_KEY, DEEPSEEK_API_KEY, or MYCODER_API_KEY\n"
+            "Set one of: OPENAI_API_KEY, OPENROUTER_API_KEY, "
+            "DEEPSEEK_API_KEY, or MYCODER_API_KEY\n"
             "\nExamples:\n"
             "  # OpenAI\n"
             "  export OPENAI_API_KEY=sk-...\n"
+            "\n"
+            "  # OpenRouter\n"
+            "  export MYCODER_PROVIDER=openrouter OPENROUTER_API_KEY=sk-or-...\n"
             "\n"
             "  # DeepSeek\n"
             "  export OPENAI_API_KEY=sk-... OPENAI_BASE_URL=https://api.deepseek.com\n"
@@ -134,6 +144,7 @@ def main():
         model=config.model,
         api_key=config.api_key,
         base_url=config.base_url,
+        provider=config.provider,
         temperature=config.temperature,
         max_tokens=config.max_tokens,
         tracer=tracer,
@@ -149,64 +160,6 @@ def main():
     except Exception:  # noqa: BLE001 - MCP is optional
         tools = ALL_TOOLS
 
-    # Phase 5: cross-session memory — config/memory.yaml, best-effort wiring.
-    # The memory tools in ALL_TOOLS resolve the same singleton store, so the
-    # REPL's tools and the planning_guard injection share one database.
-    memory = None
-    memory_compressor = None
-    experience_store = None
-    try:
-        from .memory.compressor import MemoryCompressor
-        from .memory.config import load_memory_config
-        from .memory.integration import MemoryIntegration
-        from .memory.query_rewrite import LLMQueryRewriter
-        from .memory.retriever import HybridRetriever
-        from .memory.store import get_store
-
-        mem_cfg = load_memory_config()["memory"]
-        store = get_store(mem_cfg.get("embedder"))
-        store.filter_sensitive = bool(mem_cfg.get("filter_sensitive", True))
-        # P0 query rewrite: merge multi-turn history into a standalone retrieval
-        # query so fragments ("那它呢？") resolve against earlier turns.
-        retriever = HybridRetriever(
-            store,
-            rrf_k=int(mem_cfg.get("rrf_k", 60)),
-            query_rewriter=LLMQueryRewriter(llm),
-        )
-        memory = MemoryIntegration(
-            store=store,
-            retriever=retriever,
-            max_tokens=int(mem_cfg.get("max_tokens", 2048)),
-        ).install()
-        # P1 memory closure: context compression demotes old turns to the
-        # memory DB (extract facts) instead of dropping them.
-        memory_compressor = MemoryCompressor(store, llm)
-
-        # P1 re-planning experience: orchestrator deviation playbooks persist to
-        # the memory DB (对标 Hermes 经验沉淀) — shared helper, reuses this
-        # store singleton.
-        from .memory.experience import remember_replan
-
-        experience_store = remember_replan
-
-        # P1 memory maintenance (#6): on exit, decay + compact auto memories so
-        # the store doesn't grow unbounded; optionally merge a low-confidence
-        # cluster via the compressor (LLM, best-effort).
-        from .memory.maintenance import MemoryMaintainer
-
-        def _maintain_memory() -> None:
-            maintainer = MemoryMaintainer(store)
-            maintainer.decay()
-            maintainer.compact()
-            MemoryCompressor(store, llm).summarize_cluster(scope="project", min_count=20)
-            # close the store's SQLite connections on exit (#14); data is already
-            # committed per write, this just releases the file handles
-            store.close()
-
-        global _memory_maintenance
-        _memory_maintenance = _maintain_memory
-    except Exception:  # noqa: BLE001 - memory is optional
-        memory = None
     # P2 token budget (#10): per-subagent budget protection (default 100k
     # tokens/session; MYCODER_SUBAGENT_BUDGET to tune). The tracer attached
     # to the shared LLM above is the source of truth the guard reads.
@@ -216,24 +169,20 @@ def main():
         max_tokens_per_session=int(os.getenv("MYCODER_SUBAGENT_BUDGET", "100000")),
         tracer=tracer,
     )
-    agent = Agent(
+    factory = AgentFactory.from_defaults(
         llm=llm,
         tools=tools,
         max_context_tokens=config.max_context_tokens,
-        memory=memory,
-        # P0 tool selection: inject only the tools relevant to each user
-        # message (core tools always kept) instead of all 20 schemas every turn —
-        # cuts tokens and sharpens tool choice. MCP tools the operator enabled
-        # are added to the always-include set so they're never dropped by ranking.
-        tool_selector=ToolSelector(additional_include={t.name for t in mcp_tools}),
-        # P1 memory closure: compressed context demotes key facts into memory.
-        memory_compressor=memory_compressor,
-        # P1 re-planning experience: orchestrator deviation playbooks persist
-        # to the memory DB (对标 Hermes 经验沉淀).
-        experience_store=experience_store,
-        # P2 token budget: sub-agents get per-session budget protection.
         budget_guard=budget_guard,
+        additional_tool_names={t.name for t in mcp_tools},
     )
+    global _memory_maintenance
+
+    def _maintain_factory_memory() -> None:
+        factory.maintain_memory(close=True)
+
+    _memory_maintenance = _maintain_factory_memory
+    agent = factory.build()
 
     # resume saved session
     if args.resume:
@@ -331,6 +280,9 @@ def _repl(agent: Agent, config: Config):
             p = agent.llm.total_prompt_tokens
             c = agent.llm.total_completion_tokens
             line = f"Tokens: [cyan]{p}[/cyan] prompt + [cyan]{c}[/cyan] completion = [bold]{p+c}[/bold] total"
+            reasoning = getattr(agent.llm, "total_reasoning_tokens", 0)
+            if reasoning:
+                line += f"  ([magenta]{reasoning}[/magenta] reasoning)"
             cost = agent.llm.estimated_cost
             if cost is not None:
                 line += f"  (~${cost:.4f})"

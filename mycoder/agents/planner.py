@@ -27,7 +27,7 @@ from typing import Any, Literal, cast
 from pydantic import BaseModel, Field
 
 from mycoder.config import Config
-from mycoder.llm import LLM
+from mycoder.llm import LLM, LiteLLM
 from mycoder.sandbox.logger import get_logger
 
 from .planner_prompt import build_system_prompt, build_user_prompt
@@ -238,10 +238,13 @@ def _resolve_llm(llm_config: dict[str, Any] | None) -> LLM | None:
         return None
     model = str((llm_config or {}).get("model") or cfg.model)
     base_url = (llm_config or {}).get("base_url") or cfg.base_url
-    return LLM(
+    provider = str((llm_config or {}).get("provider") or cfg.provider)
+    llm_cls = LiteLLM if provider == "litellm" else LLM
+    return llm_cls(
         model=model,
         api_key=str(api_key),
         base_url=base_url,
+        provider=provider,
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
     )

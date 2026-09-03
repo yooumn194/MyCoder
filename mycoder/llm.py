@@ -11,6 +11,7 @@ single unified interface. Set MYCODER_PROVIDER=litellm.
 
 import functools
 import json
+import os
 import time
 from dataclasses import dataclass, field
 
@@ -33,6 +34,7 @@ class LLMResponse:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cached_tokens: int = 0  # prompt tokens served from the provider's prefix cache
+    reasoning_tokens: int = 0  # subset of completion tokens used for reasoning
 
     @property
     def message(self) -> dict:
@@ -116,6 +118,31 @@ def _extract_cached_tokens(usage) -> int:
         return 0
 
 
+def _value(obj, *names, default=0):
+    """Read snake_case/camelCase fields from SDK objects or plain dicts."""
+    for name in names:
+        value = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+        if value is not None:
+            return value
+    return default
+
+
+def _extract_reasoning_tokens(usage) -> int:
+    """Read OpenRouter/OpenAI reasoning usage from the final stream chunk."""
+    details = _value(
+        usage,
+        "completion_tokens_details",
+        "completionTokensDetails",
+        default=None,
+    )
+    if details is None:
+        return 0
+    try:
+        return int(_value(details, "reasoning_tokens", "reasoningTokens") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _context_value(name: str):
     """Read a structlog contextvar (e.g. session_id) if one is bound."""
     try:
@@ -177,6 +204,7 @@ def _traced(method):
             ctx["prompt_tokens"] = prompt
             ctx["completion_tokens"] = completion
             ctx["cached_tokens"] = getattr(resp, "cached_tokens", 0) or 0
+            ctx["reasoning_tokens"] = getattr(resp, "reasoning_tokens", 0) or 0
             ctx["ttft_ms"] = ttft_ms
         return resp
 
@@ -190,15 +218,29 @@ class LLM:
         api_key: str,
         base_url: str | None = None,
         *,
+        provider: str = "openai",
         tracer: LLMTracer | None = None,
         caller: str = "llm",
         **kwargs,
     ):
         self.model = model
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.provider = provider.strip().lower()
+        self.api_key = api_key
+        self.base_url = base_url
+        client_kwargs = {"api_key": api_key, "base_url": base_url}
+        if self.provider == "openrouter":
+            headers = {}
+            if site_url := os.getenv("OPENROUTER_SITE_URL"):
+                headers["HTTP-Referer"] = site_url
+            if app_name := os.getenv("OPENROUTER_APP_NAME"):
+                headers["X-OpenRouter-Title"] = app_name
+            if headers:
+                client_kwargs["default_headers"] = headers
+        self.client = OpenAI(**client_kwargs)
         self.extra = kwargs  # temperature, max_tokens, etc.
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
+        self.total_reasoning_tokens = 0
         # Observability: optional call tracer; None = no tracing (backward compat).
         self._tracer = tracer
         self.caller = caller
@@ -210,10 +252,7 @@ class LLM:
         if not pricing:
             return None
         input_rate, output_rate = pricing
-        return (
-            self.total_prompt_tokens * input_rate / 1_000_000
-            + self.total_completion_tokens * output_rate / 1_000_000
-        )
+        return self.total_prompt_tokens * input_rate / 1_000_000 + self.total_completion_tokens * output_rate / 1_000_000
 
     @_traced
     def chat(
@@ -262,6 +301,7 @@ class LLM:
         prompt_tok = 0
         completion_tok = 0
         cached_tok = 0
+        reasoning_tok = 0
 
         for chunk in stream:
             # usage info comes in the final chunk
@@ -271,6 +311,7 @@ class LLM:
                 prompt_tok = chunk.usage.prompt_tokens or 0
                 completion_tok = chunk.usage.completion_tokens or 0
                 cached_tok = _extract_cached_tokens(chunk.usage)
+                reasoning_tok = _extract_reasoning_tokens(chunk.usage)
 
             if not chunk.choices:
                 continue
@@ -329,6 +370,7 @@ class LLM:
 
         self.total_prompt_tokens += prompt_tok
         self.total_completion_tokens += completion_tok
+        self.total_reasoning_tokens += reasoning_tok
 
         return LLMResponse(
             content="".join(content_parts),
@@ -336,6 +378,7 @@ class LLM:
             prompt_tokens=prompt_tok,
             completion_tokens=completion_tok,
             cached_tokens=cached_tok,
+            reasoning_tokens=reasoning_tok,
         )
 
     def _call_with_retry(self, params: dict, max_retries: int = 3):
@@ -346,13 +389,13 @@ class LLM:
             except (RateLimitError, APITimeoutError, APIConnectionError):
                 if attempt == max_retries - 1:
                     raise
-                wait = 2 ** attempt
+                wait = 2**attempt
                 time.sleep(wait)
             except APIError as e:
                 # retry 5xx server errors but not 4xx; base APIError has no status_code so read it defensively
                 status_code = getattr(e, "status_code", None)
                 if status_code and status_code >= 500 and attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
+                    time.sleep(2**attempt)
                 else:
                     raise
 
@@ -376,6 +419,7 @@ class LiteLLM(LLM):
         api_key: str | None = None,
         base_url: str | None = None,
         *,
+        provider: str = "litellm",
         tracer: LLMTracer | None = None,
         caller: str = "llm",
         **kwargs,
@@ -384,9 +428,11 @@ class LiteLLM(LLM):
         self.model = model
         self.api_key = api_key
         self.base_url = base_url
+        self.provider = provider.strip().lower()
         self.extra = kwargs
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
+        self.total_reasoning_tokens = 0
         # Observability: optional call tracer; None = no tracing (backward compat).
         self._tracer = tracer
         self.caller = caller
@@ -421,12 +467,14 @@ class LiteLLM(LLM):
         tc_map: dict[int, dict] = {}
         prompt_tok = 0
         completion_tok = 0
+        reasoning_tok = 0
 
         for chunk in stream:
             usage = getattr(chunk, "usage", None)
             if usage:
                 prompt_tok = getattr(usage, "prompt_tokens", 0) or 0
                 completion_tok = getattr(usage, "completion_tokens", 0) or 0
+                reasoning_tok = _extract_reasoning_tokens(usage)
 
             if not getattr(chunk, "choices", None):
                 continue
@@ -461,12 +509,14 @@ class LiteLLM(LLM):
 
         self.total_prompt_tokens += prompt_tok
         self.total_completion_tokens += completion_tok
+        self.total_reasoning_tokens += reasoning_tok
 
         return LLMResponse(
             content="".join(content_parts),
             tool_calls=parsed,
             prompt_tokens=prompt_tok,
             completion_tokens=completion_tok,
+            reasoning_tokens=reasoning_tok,
         )
 
     def _call_with_retry(self, params: dict, max_retries: int = 3):
@@ -484,12 +534,9 @@ class LiteLLM(LLM):
                 return litellm.completion(**params)
             except Exception as e:
                 err = str(e).lower()
-                is_transient = any(
-                    kw in err
-                    for kw in ["rate_limit", "timeout", "connection", "502", "503", "529"]
-                )
+                is_transient = any(kw in err for kw in ["rate_limit", "timeout", "connection", "502", "503", "529"])
                 is_server = any(kw in err for kw in ["500", "502", "503", "504"])
                 if (is_transient or is_server) and attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
+                    time.sleep(2**attempt)
                 else:
                     raise

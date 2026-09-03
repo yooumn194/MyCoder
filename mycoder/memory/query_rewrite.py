@@ -17,7 +17,7 @@ import re
 from abc import ABC, abstractmethod
 
 from mycoder.config import Config
-from mycoder.llm import LLM
+from mycoder.llm import LLM, LiteLLM
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
@@ -103,10 +103,12 @@ def _resolve_llm() -> LLM | None:
     cfg = Config.from_env()
     if not cfg.api_key:
         return None
-    return LLM(
+    llm_cls = LiteLLM if cfg.provider == "litellm" else LLM
+    return llm_cls(
         model=cfg.model,
         api_key=cfg.api_key,
         base_url=cfg.base_url,
+        provider=cfg.provider,
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
     )

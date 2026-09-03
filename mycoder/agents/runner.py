@@ -121,8 +121,6 @@ class SubagentRunner:
 
     async def _run_sub_agent(self, system_prompt: str) -> dict:
         """Default: spawn a real sub-Agent with the definition's tool whitelist."""
-        from ..agent import Agent
-
         llm = getattr(self.orchestrator, "llm", None)
         # P2 model-tier routing (cost): when the orchestrator exposes a
         # model_factory(tier) -> LLM, build a tier-appropriate model for this
@@ -135,12 +133,30 @@ class SubagentRunner:
             raise RuntimeError("orchestrator has no llm; inject an executor instead")
         allowed = self.definition.allowed_tools
         tools = [t for t in getattr(self.orchestrator, "tools", []) if t.name in allowed]
-        sub = Agent(
-            llm=llm,
-            tools=tools,
-            max_rounds=self.definition.max_turns,
-            max_context_tokens=self.definition.max_context_tokens,
-        )
+        agent_factory = getattr(self.orchestrator, "agent_factory", None)
+        if agent_factory is not None:
+            sub = agent_factory.build(
+                llm=llm,
+                tools=tools,
+                max_rounds=self.definition.max_turns,
+                max_context_tokens=self.definition.max_context_tokens,
+                reasoning_strategy=getattr(
+                    self.orchestrator, "reasoning_strategy", None
+                ),
+                budget_guard=self._budget_guard,
+            )
+        else:
+            from ..agent import Agent
+
+            sub = Agent(
+                llm=llm,
+                tools=tools,
+                max_rounds=self.definition.max_turns,
+                max_context_tokens=self.definition.max_context_tokens,
+                reasoning_strategy=getattr(
+                    self.orchestrator, "reasoning_strategy", None
+                ),
+            )
         raw = await asyncio.to_thread(
             sub.chat, f"{system_prompt}\n\nTask: {self.task}"
         )

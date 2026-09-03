@@ -1,14 +1,59 @@
 # Model routing config for the Phase 3 router (mycoder/model_router.py).
 # Hot-reloaded on file change — edit this and the next classify() call picks it up.
 #
-# tiers:      concrete model names per tier (edit to match your providers)
+# providers: provider-local model tiers and fallback chains. A fallback item
+#            can reference another tier, a concrete model, or `base`.
+# tiers:      legacy/default OpenAI tiers (kept for old integrations)
 # routing_rules: matched top-to-bottom; the FIRST hit wins. An empty
 #              `keywords` list is the absolute fallback.
 
 tiers:
-  fast: "ollama/qwen2.5-coder:7b"
-  standard: "deepseek-ai/DeepSeek-V4-Flash"
-  powerful: "claude-opus-5"
+  fast: "gpt-5.4-mini"
+  standard: "gpt-5.4"
+  powerful: "gpt-5.5"
+
+providers:
+  openai:
+    tiers:
+      fast: "gpt-5.4-mini"
+      standard: "gpt-5.4"
+      powerful: "gpt-5.5"
+    fallbacks:
+      powerful: [standard, fast, base]
+      standard: [fast, base]
+      fast: [base]
+
+  deepseek:
+    tiers:
+      fast: "deepseek-chat"
+      standard: "deepseek-chat"
+      powerful: "deepseek-reasoner"
+    fallbacks:
+      powerful: [standard, base]
+      standard: [base]
+      fast: [base]
+
+  openrouter:
+    # The user-selected free model. Replace individual tiers when you want
+    # different cost/capability trade-offs within OpenRouter.
+    tiers:
+      fast: "openrouter/free"
+      standard: "minimax/minimax-m3:free"
+      powerful: "minimax/minimax-m3:free"
+    fallbacks:
+      powerful: [standard, fast, base]
+      standard: [fast, base]
+      fast: [base]
+
+  ollama:
+    tiers:
+      fast: "qwen2.5-coder:7b"
+      standard: "qwen2.5-coder:14b"
+      powerful: "qwen2.5-coder:32b"
+    fallbacks:
+      powerful: [standard, fast, base]
+      standard: [fast, base]
+      fast: [base]
 
 routing_rules:
   # 涉及多文件的重构/架构类任务 → 最强模型
