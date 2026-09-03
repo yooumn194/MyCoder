@@ -5,14 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "mycoder"
 version = "0.4.0"
-description = "Minimal AI coding agent (~1,000 lines of Python) inspired by Claude Code. Works with any LLM. (formerly NanoCoder)"
+description = "Framework-free AI coding agent with sandboxing, memory, multi-agent orchestration, MCP, and evaluation."
 readme = "README.md"
 license = "MIT"
 # Floor is 3.11 because the sandbox executor (mycoder/sandbox) uses
 # asyncio.TaskGroup (PEP 654, Python 3.11+); the project venv is 3.12.0.
 requires-python = ">=3.11"
 authors = [
-    { name = "Yufeng He", email = "40085740+he-yufeng@users.noreply.github.com" },
+    { name = "zzc", email = "yooumn@163.com" },
 ]
 keywords = ["ai", "agent", "coding", "cli", "llm", "claude-code"]
 classifiers = [
@@ -30,6 +30,8 @@ classifiers = [
 ]
 dependencies = [
     "openai>=1.0",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
     "rich>=13.0",
     "prompt_toolkit>=3.0",
     "python-dotenv>=1.0",
@@ -40,6 +42,7 @@ dependencies = [
 packages = ["mycoder"]
 
 [project.optional-dependencies]
+api = ["fastapi>=0.115", "uvicorn>=0.30", "redis>=5.0", "httpx>=0.27"]
 litellm = ["litellm>=1.60.0,<2.0.0"]
 sandbox = ["docker>=7.0.0"]
 # MCP SSE transport only — stdio MCP works with the standard library alone.
@@ -65,9 +68,9 @@ asyncio_mode = "auto"
 mycoder = "mycoder.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/he-yufeng/MyCoder"
-Repository = "https://github.com/he-yufeng/MyCoder"
-Issues = "https://github.com/he-yufeng/MyCoder/issues"
+Homepage = "https://github.com/yooumn194/MyCoder"
+Repository = "https://github.com/yooumn194/MyCoder"
+Issues = "https://github.com/yooumn194/MyCoder/issues"
 
 [tool.ruff]
 line-length = 130
