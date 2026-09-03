@@ -26,7 +26,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install -U pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -e ".[api,dev]"
 
       # ripgrep for the live rg-backend tests (they skip when rg is absent).
       - name: Install ripgrep
@@ -41,15 +41,11 @@ jobs:
       - name: Run tests
         run: python -m pytest tests/ -v
 
-      # P1-1: evaluation benchmark — reports only, never blocks merges.
-      - name: Run Phase 4 Evaluation
-        run: |
-          python -m mycoder.eval.runner --benchmark orchestration --cases 20 \
-            --report eval-report.json
-        continue-on-error: true
+      - name: Validate evaluation dataset
+        run: python -m eval_bench.runner --dry-run
 
       - name: Compile
-        run: python -m compileall -q mycoder tests
+        run: python -m compileall -q mycoder api eval_bench tests
 
   package:
     runs-on: ubuntu-latest
@@ -66,6 +62,20 @@ jobs:
           python -m build
           python -m twine check dist/*
 
+      - name: Verify wheel contents from an isolated directory
+        shell: bash
+        run: |
+          python -m venv /tmp/mycoder-wheel-smoke
+          /tmp/mycoder-wheel-smoke/bin/python -m pip install -U pip
+          /tmp/mycoder-wheel-smoke/bin/python -m pip install dist/*.whl fastapi uvicorn redis httpx
+          cd /tmp
+          /tmp/mycoder-wheel-smoke/bin/python -c "import api, eval_bench, mycoder"
+          /tmp/mycoder-wheel-smoke/bin/python -c "from mycoder.resources import config_path; assert all(config_path(name).is_file() for name in ('model_routing.yaml', 'memory.yaml', 'mcp_servers.yaml'))"
+          /tmp/mycoder-wheel-smoke/bin/mycoder --help
+          /tmp/mycoder-wheel-smoke/bin/mycoder-api --help
+          /tmp/mycoder-wheel-smoke/bin/mycoder-bench --dry-run
+          /tmp/mycoder-wheel-smoke/bin/mycoder-score --help
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -79,4 +89,36 @@ jobs:
         run: python -m pip install -U pip ruff
 
       - name: Ruff check
-        run: ruff check mycoder tests
+        run: ruff check mycoder api eval_bench tests
+
+  redis-integration:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install integration dependencies
+        run: python -m pip install -e ".[api,dev]"
+      - name: Run real Redis integration tests
+        env:
+          MYCODER_TEST_REDIS_URL: redis://localhost:6379/15
+        run: python -m pytest tests/test_redis_integration.py -v
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build service image
+        run: docker build --tag mycoder-ci .

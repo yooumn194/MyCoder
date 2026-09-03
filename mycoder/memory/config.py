@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from mycoder.resources import config_path
+
 
 DEFAULT_CONFIG: dict = {
     "memory": {
@@ -24,9 +26,7 @@ DEFAULT_CONFIG: dict = {
     }
 }
 
-_CONFIG_PATH = (
-    Path(__file__).resolve().parent.parent.parent / "config" / "memory.yaml"
-)
+_CONFIG_PATH = config_path("memory.yaml")
 
 
 def _deep_merge(base: dict, override: dict) -> dict:

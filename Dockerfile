@@ -15,6 +15,7 @@ COPY pyproject.toml README.md ./
 COPY mycoder/ mycoder/
 COPY config/ config/
 COPY api/ api/
+COPY eval_bench/ eval_bench/
 
 RUN pip install --no-cache-dir . fastapi uvicorn redis
 

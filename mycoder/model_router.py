@@ -15,11 +15,12 @@ from pathlib import Path
 
 import yaml
 
+from mycoder.resources import config_path
 from mycoder.sandbox.logger import get_logger
 
 logger = get_logger("mycoder.model_router")
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "model_routing.yaml"
+DEFAULT_CONFIG_PATH = config_path("model_routing.yaml")
 
 # Fallback used when the config file is not present (e.g. installed from a wheel).
 DEFAULT_YAML = """\

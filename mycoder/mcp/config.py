@@ -9,12 +9,11 @@ import os
 from pathlib import Path
 
 import yaml
+from mycoder.resources import config_path
 
 from .errors import MCPStartupError
 
-DEFAULT_CONFIG_PATH = (
-    Path(__file__).resolve().parent.parent.parent / "config" / "mcp_servers.yaml"
-)
+DEFAULT_CONFIG_PATH = config_path("mcp_servers.yaml")
 
 
 def _resolve_auth(auth: dict | None) -> dict:

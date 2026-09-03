@@ -8,4 +8,4 @@ Zero-intrusion: no existing mycoder module is modified; the state backend is
 injected into the Orchestrator via a PersistentBlackboard (dependencies.py).
 """
 
-__version__ = "0.1.0"
+from mycoder import __version__ as __version__

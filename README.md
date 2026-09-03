@@ -18,6 +18,10 @@
 ```bash
 # 安装（Python 3.11+）
 pip install -e .
+# 包含 API 服务依赖的安装方式
+pip install -e ".[api]"
+mycoder-api --help
+
 
 # 配置（任选一种 LLM）
 export OPENAI_API_KEY=sk-...
@@ -228,7 +232,7 @@ MYCODER_PROFILE=deepseek uvicorn api.server:app
 `MYCODER_PROFILE`/`--provider` 会整体选择 `_PROVIDER_DEFAULTS` 中的模型、端点和专属 Key。若某个 provider 需要固定非默认模型，只需一次性设置，例如 `MYCODER_OPENROUTER_MODEL=openai/gpt-oss-120b:free`。
 
 ```bash
-uvicorn api.server:app    # 或 docker compose up --build
+mycoder-api --host 0.0.0.0 --port 8000    # 或 docker compose up --build
 
 # 多 worker/生产模式（先安装 pip install -e '.[api]'）
 export STATE_BACKEND=redis REDIS_URL=redis://localhost:6379/0
