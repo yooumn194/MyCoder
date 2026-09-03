@@ -21,6 +21,10 @@ from .planner import TaskPlanner
 from .replan import DeviationDetector, DeviationType
 from .runner import SubagentRunner
 
+from ..sandbox.logger import get_logger
+
+logger = get_logger("mycoder.orchestrator")
+
 CIRCUIT_BREAKER_THRESHOLD = 3
 # Seconds a tripped subagent stays open before ONE probe call is allowed
 # (half-open). A probe that succeeds closes the breaker; one that fails
@@ -59,6 +63,8 @@ class Orchestrator:
         deviation_detector=None,
         experience_store=None,
         max_replan_rounds: int = 3,
+        checkpoint_store=None,
+        reasoning_strategy: str | None = None,
     ) -> None:
         self.blackboard = blackboard
         self.plan_store = plan_store
@@ -79,6 +85,12 @@ class Orchestrator:
         self._deviation = deviation_detector or DeviationDetector()
         self._experience_store = experience_store
         self._max_replan_rounds = max(0, int(max_replan_rounds))
+        # 断点续跑: per-session checkpoints (plan + per-step results). Resume
+        # reuses the same plan and skips already-succeeded steps.
+        self._checkpoint_store = checkpoint_store
+        self.reasoning_strategy = reasoning_strategy
+        self._session_id = "unknown"
+        self._checkpoint_done: dict[str, SubagentResultEnvelope] = {}
         # Token-budget enforcement (optional; None = no-op, backward compatible).
         self._budget_guard = budget_guard
         self._budget_blown = False
@@ -86,6 +98,9 @@ class Orchestrator:
         # when a subagent tripped the breaker (monotonic timestamp) — for the
         # half-open probe after the cooldown
         self._circuit_open_since: dict[str, float] = {}
+        # Exposed for traces/tests so AUTO is an observable decision rather
+        # than an alias whose actual execution mode is impossible to explain.
+        self.last_strategy: OrchestrationStrategy | None = None
 
     # ---------------------------------------------------------------- public
 
@@ -142,12 +157,42 @@ class Orchestrator:
         strategy: OrchestrationStrategy = OrchestrationStrategy.AUTO,
         parent_context: Optional[dict] = None,
         subtasks: Optional[list[dict]] = None,
+        *,
+        resume: bool = False,
     ) -> OrchestrationResult:
-        """Orchestration main entry."""
+        """Orchestration main entry.
+
+        With ``resume=True`` and a checkpoint store injected, a previously
+        interrupted run continues: the SAME plan is reused (not re-decomposed,
+        which could differ) and steps that already succeeded are skipped —
+        execution resumes from the first failed / never-run step (断点续跑).
+        """
         start_time = time.monotonic()
         parent_context = parent_context or {"task_id": str(uuid.uuid4())}
+        session_id = (
+            parent_context.get("session_id") or parent_context.get("task_id", "unknown")
+        )
+        self._session_id = session_id
 
-        assignments = await self._decompose(task, parent_context, subtasks)
+        self._checkpoint_done: dict[str, SubagentResultEnvelope] = {}
+        if resume and self._checkpoint_store is not None:
+            cp = self._checkpoint_store.load(session_id)
+            if cp is not None:
+                assignments = cp["assignments"]  # reuse the SAME plan
+                self._checkpoint_done = cp["results"]
+                logger.info(
+                    "orchestrate_resume",
+                    session_id=session_id,
+                    skipped=len(self._checkpoint_done),
+                )
+            else:
+                assignments = await self._decompose(task, parent_context, subtasks)
+                self._checkpoint_store.save_plan(session_id, task, assignments)
+        else:
+            assignments = await self._decompose(task, parent_context, subtasks)
+            if self._checkpoint_store is not None:
+                self._checkpoint_store.save_plan(session_id, task, assignments)
+
         results = await self._execute(assignments, strategy, parent_context)
         return self._synthesize(results, start_time, parent_context)
 
@@ -198,22 +243,154 @@ class Orchestrator:
         strategy: OrchestrationStrategy,
         parent_context: dict,
     ) -> dict[str, SubagentResultEnvelope]:
+        assignments = self._normalize_assignments(assignments)
+        layers = self._topological_layers(assignments)
         results: dict[str, SubagentResultEnvelope] = {}
-        filtered: list[dict] = []
-        for assign in assignments:
-            name = assign["subagent_name"]
-            if self._is_open(name):
-                results[name] = self._build_circuit_break_envelope(name)
-                continue
-            if self._budget_blown:
-                continue
-            filtered.append(assign)
+        # Dependency state is always keyed by assignment id. Public results keep
+        # the historical role key when it is unique, and fall back to assignment
+        # ids for repeated roles so no result can overwrite another.
+        self._completed_by_id: dict[str, SubagentResultEnvelope] = {}
+        self._result_keys: dict[str, str] = {}
+
+        if strategy == OrchestrationStrategy.AUTO:
+            strategy = self._select_auto_strategy(layers)
+            logger.info(
+                "orchestration_auto_selected",
+                strategy=strategy.value,
+                assignments=sum(len(layer) for layer in layers),
+                waves=len(layers),
+            )
+        self.last_strategy = strategy
 
         if strategy == OrchestrationStrategy.PARALLEL:
-            return await self._execute_parallel(filtered, parent_context, results)
+            return await self._execute_parallel(layers, parent_context, results)
+        ordered = [assign for layer in layers for assign in layer]
         if strategy == OrchestrationStrategy.CONDITIONAL:
-            return await self._execute_conditional(filtered, parent_context, results)
-        return await self._execute_sequential(filtered, parent_context, results)
+            return await self._execute_conditional(ordered, parent_context, results)
+        return await self._execute_sequential(ordered, parent_context, results)
+
+    @staticmethod
+    def _select_auto_strategy(
+        layers: list[list[dict]],
+    ) -> OrchestrationStrategy:
+        """Choose parallel only when the DAG contains useful *safe* fan-out.
+
+        The built-in role catalogue is the source of truth for write ability.
+        Unknown roles and explicit executors are conservatively treated as
+        writers: concurrent repository mutations without declared write sets
+        are not safe.  PARALLEL still executes topological waves in order, so
+        dependencies remain respected.
+        """
+        for layer in layers:
+            if len(layer) < 2:
+                continue
+            if all(
+                (definition := BUILTIN_SUBAGENTS.get(assign["subagent_name"]))
+                is not None
+                and definition.read_only
+                and assign.get("executor") is None
+                for assign in layer
+            ):
+                return OrchestrationStrategy.PARALLEL
+        return OrchestrationStrategy.SEQUENTIAL
+
+    @staticmethod
+    def _normalize_assignments(assignments: list[dict]) -> list[dict]:
+        """Copy assignments, assign stable ids, and validate dependency refs."""
+        normalized: list[dict] = []
+        ids: set[str] = set()
+        for index, original in enumerate(assignments):
+            assign = dict(original)
+            name = str(assign.get("subagent_name", "")).strip()
+            aid = str(assign.get("id") or f"{name or 'task'}-{index + 1}")
+            if aid in ids:
+                raise ValueError(f"duplicate assignment id: {aid}")
+            ids.add(aid)
+            assign["id"] = aid
+            assign["depends_on"] = [str(dep) for dep in assign.get("depends_on", [])]
+            normalized.append(assign)
+        for assign in normalized:
+            missing = set(assign["depends_on"]) - ids
+            if missing:
+                raise ValueError(
+                    f"assignment {assign['id']} has unknown dependencies: {sorted(missing)}"
+                )
+        return normalized
+
+    @staticmethod
+    def _topological_layers(assignments: list[dict]) -> list[list[dict]]:
+        """Return dependency-safe execution waves using Kahn's algorithm."""
+        remaining = {assign["id"]: assign for assign in assignments}
+        emitted: set[str] = set()
+        layers: list[list[dict]] = []
+        while remaining:
+            ready = [
+                assign
+                for assign in remaining.values()
+                if set(assign["depends_on"]) <= emitted
+            ]
+            if not ready:
+                raise ValueError("assignment dependency graph contains a cycle")
+            layers.append(ready)
+            for assign in ready:
+                emitted.add(assign["id"])
+                remaining.pop(assign["id"])
+        return layers
+
+    def _put_result(
+        self,
+        results: dict[str, SubagentResultEnvelope],
+        assign: dict,
+        envelope: SubagentResultEnvelope,
+    ) -> None:
+        """Store one result without allowing repeated roles to overwrite."""
+        if not hasattr(self, "_result_keys"):
+            self._result_keys = {}
+        if not hasattr(self, "_completed_by_id"):
+            self._completed_by_id = {}
+        aid = str(assign.get("id") or assign["subagent_name"])
+        key = self._result_keys.get(aid)
+        if key is None:
+            preferred = assign["subagent_name"]
+            key = preferred if preferred not in results else aid
+            suffix = 2
+            base = key
+            while key in results:
+                key = f"{base}-{suffix}"
+                suffix += 1
+            self._result_keys[aid] = key
+        results[key] = envelope
+        self._completed_by_id[aid] = envelope
+
+    def _dependency_failure(
+        self, assign: dict, parent_context: dict
+    ) -> SubagentResultEnvelope | None:
+        if not hasattr(self, "_completed_by_id"):
+            self._completed_by_id = {}
+        blocked = [
+            dep
+            for dep in assign.get("depends_on", [])
+            if dep in self._completed_by_id
+            and self._completed_by_id[dep].status in ("failed", "cancelled")
+        ]
+        if not blocked:
+            return None
+        return self._error_envelope(
+            assign["subagent_name"],
+            ErrorObject(
+                code="DEPENDENCY_FAILED",
+                category="system_constraint",
+                retryable=False,
+                message=f"依赖任务失败，已跳过 {assign['id']}: {', '.join(blocked)}",
+            ),
+            parent_context,
+        )
+
+    def _checkpoint_result(self, assign: dict, envelope: SubagentResultEnvelope) -> None:
+        if self._checkpoint_store is not None and envelope.status in ("success", "partial"):
+            self._checkpoint_store.record_result(
+                self._session_id, assign["id"], envelope.model_dump()
+            )
 
     async def _execute_sequential(
         self, assignments: list[dict], parent_context: dict, results: dict
@@ -232,9 +409,31 @@ class Orchestrator:
                 break
             assign = queue.pop(0)
             name = assign["subagent_name"]
+            aid = assign.get("id", name)
+
+            dependency_failure = self._dependency_failure(assign, parent_context)
+            if dependency_failure is not None:
+                self._put_result(results, assign, dependency_failure)
+                continue
+
+            # Resume: skip a step that already succeeded in a prior interrupted
+            # run — its checkpointed envelope is reused (断点续跑).
+            if aid in self._checkpoint_done:
+                envelope = self._checkpoint_done[aid]
+                if envelope.status in ("success", "partial"):
+                    self._put_result(results, assign, envelope)
+                    self._record_status(name, envelope)
+                    continue
+
+            if self._is_open(name):
+                envelope = self._build_circuit_break_envelope(name)
+                self._put_result(results, assign, envelope)
+                continue
+
             envelope = await self._run_one(assign, parent_context)
-            results[name] = envelope
+            self._put_result(results, assign, envelope)
             self._record_status(name, envelope)
+            self._checkpoint_result(assign, envelope)
 
             deviation = self._deviation.check(envelope)
             if deviation is None or replan_left <= 0:
@@ -263,9 +462,11 @@ class Orchestrator:
                 return "hard_fail_skip"
             retry = await self._run_one(assign, parent_context)
             if retry.status in ("success", "partial"):
-                results[name] = retry
+                self._put_result(results, assign, retry)
                 self._record_status(name, retry)
+                self._checkpoint_result(assign, retry)
                 return "hard_fail_retry_recovered"
+            self._put_result(results, assign, retry)
             self._record_status(name, retry)
             return "hard_fail_retry_failed"
         if deviation.type == DeviationType.SOFT_DRIFT:
@@ -326,43 +527,76 @@ class Orchestrator:
             pass
 
     async def _execute_parallel(
-        self, assignments: list[dict], parent_context: dict, results: dict
+        self, layers: list[list[dict]], parent_context: dict, results: dict
     ) -> dict[str, SubagentResultEnvelope]:
-        outcomes = await asyncio.gather(
-            *[self._run_one(assign, parent_context) for assign in assignments],
-            return_exceptions=True,
-        )
-        for assign, outcome in zip(assignments, outcomes):
-            name = assign["subagent_name"]
-            if isinstance(outcome, Exception):
-                results[name] = self._error_envelope(
-                    name,
-                    ErrorObject(
-                        code="SUBAGENT_ERROR",
-                        category="transient",
-                        retryable=True,
-                        message=str(outcome),
-                    ),
-                    parent_context,
+        # Only nodes in the same topological wave run concurrently. A dependent
+        # wave starts after all of its prerequisites have finished.
+        for layer in layers:
+            runnable: list[dict] = []
+            for assign in layer:
+                name = assign["subagent_name"]
+                dependency_failure = self._dependency_failure(assign, parent_context)
+                if dependency_failure is not None:
+                    self._put_result(results, assign, dependency_failure)
+                elif assign["id"] in self._checkpoint_done:
+                    envelope = self._checkpoint_done[assign["id"]]
+                    self._put_result(results, assign, envelope)
+                    self._record_status(name, envelope)
+                elif self._is_open(name):
+                    self._put_result(results, assign, self._build_circuit_break_envelope(name))
+                elif not self._budget_blown:
+                    runnable.append(assign)
+            outcomes = await asyncio.gather(
+                *[self._run_one(assign, parent_context) for assign in runnable],
+                return_exceptions=True,
+            )
+            for assign, outcome in zip(runnable, outcomes):
+                name = assign["subagent_name"]
+                envelope = (
+                    self._error_envelope(
+                        name,
+                        ErrorObject(
+                            code="SUBAGENT_ERROR",
+                            category="transient",
+                            retryable=True,
+                            message=str(outcome),
+                        ),
+                        parent_context,
+                    )
+                    if isinstance(outcome, Exception)
+                    else outcome
                 )
-            else:
-                results[name] = outcome
-            self._record_status(name, results[name])
+                self._put_result(results, assign, envelope)
+                self._record_status(name, envelope)
+                self._checkpoint_result(assign, envelope)
         return results
 
     async def _execute_conditional(
         self, assignments: list[dict], parent_context: dict, results: dict
     ) -> dict[str, SubagentResultEnvelope]:
-        for i, assign in enumerate(assignments):
+        for assign in assignments:
             name = assign["subagent_name"]
             # if a previous assignment failed or the budget tripped, stop the chain
             if self._budget_blown or any(
                 r.status in ("failed", "cancelled") for r in results.values()
             ):
                 break
+            dependency_failure = self._dependency_failure(assign, parent_context)
+            if dependency_failure is not None:
+                self._put_result(results, assign, dependency_failure)
+                break
+            if assign["id"] in self._checkpoint_done:
+                envelope = self._checkpoint_done[assign["id"]]
+                self._put_result(results, assign, envelope)
+                self._record_status(name, envelope)
+                continue
+            if self._is_open(name):
+                self._put_result(results, assign, self._build_circuit_break_envelope(name))
+                break
             envelope = await self._run_one(assign, parent_context)
-            results[name] = envelope
+            self._put_result(results, assign, envelope)
             self._record_status(name, envelope)
+            self._checkpoint_result(assign, envelope)
         return results
 
     async def _run_one(self, assign: dict, parent_context: dict) -> SubagentResultEnvelope:
@@ -378,9 +612,17 @@ class Orchestrator:
                 ),
                 parent_context,
             )
+        task = assign["task"]
+        dependency_summaries = [
+            f"[{dep}] {self._completed_by_id[dep].summary}"
+            for dep in assign.get("depends_on", [])
+            if dep in self._completed_by_id
+        ]
+        if dependency_summaries:
+            task += "\n\n已完成依赖的结果摘要：\n" + "\n".join(dependency_summaries)
         runner = SubagentRunner(
             definition=definition,
-            task=assign["task"],
+            task=task,
             orchestrator=self,
             parent_context=parent_context,
             instance_id=str(uuid.uuid4()),

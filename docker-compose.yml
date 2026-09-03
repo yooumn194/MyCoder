@@ -15,8 +15,19 @@ services:
       STATE_BACKEND: redis
       REDIS_URL: redis://redis:6379/0
       MYCODER_API_KEY: ${MYCODER_API_KEY:-}
+      MYCODER_PROFILE: ${MYCODER_PROFILE:-}
+      MYCODER_PROVIDER: ${MYCODER_PROVIDER:-}
+      MYCODER_OPENROUTER_MODEL: ${MYCODER_OPENROUTER_MODEL:-}
+      MYCODER_DEEPSEEK_MODEL: ${MYCODER_DEEPSEEK_MODEL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      MYCODER_API_KEYS: ${MYCODER_API_KEYS:-}
+      MYCODER_REQUIRE_AUTH: ${MYCODER_REQUIRE_AUTH:-false}
+      MYCODER_WORKSPACE_ROOT: /workspaces
+    volumes:
+      - ./workspaces:/workspaces
     depends_on:
       redis:
         condition: service_healthy

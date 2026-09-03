@@ -14,8 +14,11 @@ MYCODER_RATE_LIMIT=requests-per-minute on /v1/agent/run).
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable
+from mycoder.observability.store import RateLimitStore
+
 
 Clock = Callable[[], float]
 
@@ -101,21 +104,34 @@ class SlidingWindowCounter:
 
 
 class RateLimiter:
-    """Per-key sliding-window limiter (the service-layer facade)."""
+    """Per-key sliding-window limiter with an optional shared state store."""
 
-    def __init__(self, requests_per_minute: int, now: Clock | None = None) -> None:
+    def __init__(
+        self,
+        requests_per_minute: int,
+        now: Clock | None = None,
+        *,
+        store: RateLimitStore | None = None,
+    ) -> None:
         self.requests_per_minute = requests_per_minute
         self._clock = now or _default_clock
         self._limiters: dict[str, SlidingWindowCounter] = {}
+        self._lock = threading.Lock()
+        self.store = store
 
     def allow(self, key: str) -> bool:
-        limiter = self._limiters.setdefault(
-            key, SlidingWindowCounter(60.0, self.requests_per_minute, self._clock)
-        )
-        return limiter.allow()
+        if self.store is not None:
+            return bool(self.store.rate_limit_allow(key, self.requests_per_minute, 60.0))
+        with self._lock:
+            limiter = self._limiters.setdefault(
+                key, SlidingWindowCounter(60.0, self.requests_per_minute, self._clock)
+            )
+            return limiter.allow()
 
     @classmethod
-    def from_env(cls) -> "RateLimiter | None":
+    def from_env(
+        cls, *, store: RateLimitStore | None = None
+    ) -> "RateLimiter | None":
         """MYCODER_RATE_LIMIT=<requests/min> -> limiter, or None when unset."""
         import os
 
@@ -123,6 +139,7 @@ class RateLimiter:
         if not raw:
             return None
         try:
-            return cls(int(raw))
+            value = int(raw)
         except ValueError:
             return None
+        return cls(value, store=store) if value > 0 else None

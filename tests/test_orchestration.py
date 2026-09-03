@@ -72,6 +72,33 @@ def test_subagent_readonly_enforced():
     assert "write_file" in BUILTIN_SUBAGENTS["implementer"].allowed_tools
 
 
+def test_auto_selects_parallel_for_independent_read_only_wave():
+    assignments = Orchestrator._normalize_assignments([
+        {"id": "explore", "subagent_name": "explorer", "task": "scan"},
+        {"id": "review", "subagent_name": "reviewer", "task": "review"},
+    ])
+    layers = Orchestrator._topological_layers(assignments)
+    assert Orchestrator._select_auto_strategy(layers) == OrchestrationStrategy.PARALLEL
+
+
+def test_auto_selects_sequential_for_concurrent_writers():
+    assignments = Orchestrator._normalize_assignments([
+        {"id": "a", "subagent_name": "implementer", "task": "write a"},
+        {"id": "b", "subagent_name": "implementer", "task": "write b"},
+    ])
+    layers = Orchestrator._topological_layers(assignments)
+    assert Orchestrator._select_auto_strategy(layers) == OrchestrationStrategy.SEQUENTIAL
+
+
+def test_auto_selects_sequential_when_dag_has_no_fan_out():
+    assignments = Orchestrator._normalize_assignments([
+        {"id": "a", "subagent_name": "explorer", "task": "scan"},
+        {"id": "b", "subagent_name": "reviewer", "task": "review", "depends_on": ["a"]},
+    ])
+    layers = Orchestrator._topological_layers(assignments)
+    assert Orchestrator._select_auto_strategy(layers) == OrchestrationStrategy.SEQUENTIAL
+
+
 # ---------------------------------------------------------------------------
 # SubagentRunner
 # ---------------------------------------------------------------------------
@@ -228,6 +255,79 @@ async def test_parallel_subagents():
     )
     assert {"explorer", "reviewer"} <= set(result.results)
     assert result.results["explorer"].status == "success"
+
+
+async def test_parallel_strategy_respects_dag_dependencies():
+    """A dependent node must wait for its prerequisite even in parallel mode."""
+    order = []
+
+    async def _prerequisite(task, system_prompt):
+        await asyncio.sleep(0.01)
+        order.append("a_done")
+        return _success_envelope()
+
+    async def _dependent(task, system_prompt):
+        assert order == ["a_done"]
+        assert "[a] done" in task
+        order.append("b_started")
+        return _success_envelope()
+
+    result = await _orchestrator().orchestrate(
+        "t",
+        OrchestrationStrategy.PARALLEL,
+        parent_context=_ctx(),
+        # Deliberately put the dependent node first: topology, not array order,
+        # must determine when it runs.
+        subtasks=[
+            {"id": "b", "subagent_name": "reviewer", "task": "b", "depends_on": ["a"], "executor": _dependent},
+            {"id": "a", "subagent_name": "explorer", "task": "a", "depends_on": [], "executor": _prerequisite},
+        ],
+    )
+
+    assert result.success
+    assert order == ["a_done", "b_started"]
+
+
+async def test_repeated_subagent_roles_do_not_overwrite_results():
+    result = await _orchestrator().orchestrate(
+        "t",
+        OrchestrationStrategy.SEQUENTIAL,
+        parent_context=_ctx(),
+        subtasks=[
+            {"id": "impl-1", "subagent_name": "implementer", "task": "one", "executor": _executor_returning(_success_envelope())},
+            {"id": "impl-2", "subagent_name": "implementer", "task": "two", "executor": _executor_returning(_success_envelope())},
+        ],
+    )
+
+    assert result.success
+    assert len(result.results) == 2
+    assert set(result.results) == {"implementer", "impl-2"}
+
+
+async def test_failed_dependency_skips_dependent_node():
+    dependent_called = False
+
+    async def _fail(task, system_prompt):
+        return _envelope("failed")
+
+    async def _must_not_run(task, system_prompt):
+        nonlocal dependent_called
+        dependent_called = True
+        return _success_envelope()
+
+    result = await _orchestrator().orchestrate(
+        "t",
+        OrchestrationStrategy.PARALLEL,
+        parent_context=_ctx(),
+        subtasks=[
+            {"id": "a", "subagent_name": "explorer", "task": "a", "depends_on": [], "executor": _fail},
+            {"id": "b", "subagent_name": "implementer", "task": "b", "depends_on": ["a"], "executor": _must_not_run},
+        ],
+    )
+
+    assert not result.success
+    assert dependent_called is False
+    assert result.results["implementer"].error.code == "DEPENDENCY_FAILED"
 
 
 async def test_circuit_breaker_after_3_failures():

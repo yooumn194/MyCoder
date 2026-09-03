@@ -5,6 +5,7 @@
                             Orchestrator bound to one session, with the state
                             backend injected.
   * get_default_llm()    -> lazily-built LLM from env config (None if no key).
+  * get_checkpoint_store() -> process-wide file-backed orchestration checkpoints.
 
 How the state backend reaches the Orchestrator WITHOUT touching
 orchestrator.py (zero-intrusion): it is injected through a PersistentBlackboard
@@ -16,25 +17,35 @@ existing caller keeps working unchanged.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 
 from fastapi import Depends
 
+from mycoder.agent_factory import AgentFactory
 from mycoder.agents.blackboard import Blackboard
+from mycoder.agents.checkpoint import CheckpointStore, RedisCheckpointStore
 from mycoder.agents.orchestrator import Orchestrator
 from mycoder.agents.planner import TaskPlanner
 from mycoder.config import Config
+from mycoder.observability.alerts import AlertManager
 from mycoder.observability.budget import TokenBudgetGuard
+from mycoder.observability.ratelimit import RateLimiter
+from mycoder.observability.store import ObservabilityStore, create_observability_store
 from mycoder.observability.trace import LLMTracer
 from mycoder.tools import ALL_TOOLS
+from mycoder.tools import build_scoped_tools
 
 from .state_backend import StateBackend, create_state_backend
 
 _state_backend: StateBackend | None = None
 _llm = None
-# Process-wide LLM trace store: every session's calls land here, and /cost reads
-# it. Resets on process restart (in-memory by design).
 _tracer: LLMTracer | None = None
+_checkpoint_store: CheckpointStore | None = None
+_observability_store: ObservabilityStore | None = None
+_alert_manager: AlertManager | None = None
+_rate_limiter: RateLimiter | None = None
+_rate_limiter_ready = False
 
 
 class PersistentBlackboard(Blackboard):
@@ -88,12 +99,71 @@ def get_state_backend() -> StateBackend:
     return _state_backend
 
 
+def get_observability_store() -> ObservabilityStore:
+    """Shared SQLite/Redis state for traces, rate windows and alerts."""
+    global _observability_store
+    if _observability_store is None:
+        _observability_store = create_observability_store()
+    return _observability_store
+
+
+def get_alert_manager() -> AlertManager:
+    global _alert_manager
+    if _alert_manager is None:
+        _alert_manager = AlertManager(store=get_observability_store())
+    return _alert_manager
+
+
 def get_tracer() -> LLMTracer:
-    """Process-wide LLM trace store shared by every session."""
+    """Recorder backed by process-independent SQLite/Redis trace state."""
     global _tracer
     if _tracer is None:
-        _tracer = LLMTracer()
+        _tracer = LLMTracer(store=get_observability_store())
+        _tracer.attach_alert_manager(get_alert_manager())
     return _tracer
+
+
+def get_rate_limiter() -> RateLimiter | None:
+    """Configured distributed limiter; None keeps the endpoint unlimited."""
+    global _rate_limiter, _rate_limiter_ready
+    if not _rate_limiter_ready:
+        # Avoid opening SQLite/Redis when the feature is disabled.
+        if os.getenv("MYCODER_RATE_LIMIT", "").strip():
+            _rate_limiter = RateLimiter.from_env(store=get_observability_store())
+        _rate_limiter_ready = True
+    return _rate_limiter
+
+
+def reset_observability_runtime() -> None:
+    """Close/reset process handles without deleting persisted state (tests/reload)."""
+    global _tracer, _observability_store, _alert_manager, _rate_limiter, _llm
+    global _rate_limiter_ready
+    _llm = None  # it owns the old tracer reference
+    if _observability_store is not None:
+        try:
+            _observability_store.close()
+        except Exception:  # noqa: BLE001 - teardown is best-effort
+            pass
+    _tracer = None
+    _alert_manager = None
+    _rate_limiter = None
+    _rate_limiter_ready = False
+    _observability_store = None
+
+
+def get_checkpoint_store() -> CheckpointStore:
+    """Process-wide checkpoint store used by every API orchestrator."""
+    global _checkpoint_store
+    if _checkpoint_store is None:
+        if os.getenv("STATE_BACKEND", "local").strip().lower() == "redis":
+            _checkpoint_store = RedisCheckpointStore(
+                os.getenv("REDIS_URL", "redis://localhost:6379/0")
+            )
+        else:
+            _checkpoint_store = CheckpointStore(
+                base_dir=os.getenv("MYCODER_CHECKPOINT_DIR") or None
+            )
+    return _checkpoint_store
 
 
 def get_default_llm():
@@ -105,12 +175,14 @@ def get_default_llm():
     cfg = Config.from_env()
     if not cfg.api_key:
         return None
-    from mycoder.llm import LLM
+    from mycoder.llm import LLM, LiteLLM
 
-    _llm = LLM(
+    llm_cls = LiteLLM if cfg.provider == "litellm" else LLM
+    _llm = llm_cls(
         model=cfg.model,
         api_key=cfg.api_key,
         base_url=cfg.base_url,
+        provider=cfg.provider,
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
         tracer=get_tracer(),
@@ -129,17 +201,34 @@ def get_orchestrator(
     between concurrent requests except the (thread-safe) state backend."""
 
     def _build(
-        session_id: str, *, llm=None, tools=None, budget_guard: TokenBudgetGuard | None = None
+        session_id: str,
+        *,
+        llm=None,
+        tools=None,
+        budget_guard: TokenBudgetGuard | None = None,
+        checkpoint_store: CheckpointStore | None = None,
+        workspace_root: str | None = None,
+        reasoning_strategy: str | None = None,
     ) -> Orchestrator:
         from mycoder.memory.experience import remember_replan
         from mycoder.model_router import build_model_factory
 
         blackboard = PersistentBlackboard(state_backend, session_id)
         llm = llm if llm is not None else get_default_llm()
-        return Orchestrator(
+        manager = None
+        if tools is None and workspace_root is not None:
+            tools, manager = build_scoped_tools(workspace_root, session_id)
+        runtime_tools = tools if tools is not None else ALL_TOOLS
+        agent_factory = AgentFactory.from_defaults(
+            llm=llm,
+            tools=runtime_tools,
+            max_context_tokens=Config.from_env().max_context_tokens,
+            budget_guard=budget_guard,
+        )
+        orchestrator = Orchestrator(
             blackboard=blackboard,
             llm=llm,
-            tools=tools if tools is not None else ALL_TOOLS,
+            tools=runtime_tools,
             # LLM-driven task decomposition: with no key the planner degrades
             # to the single-explorer fallback, never raising.
             planner=TaskPlanner(llm=llm),
@@ -151,7 +240,15 @@ def get_orchestrator(
             # P1 re-planning experience: deviation playbooks persist to the
             # memory DB (best-effort; no memory backend -> no-op) so API
             # sub-agent recovery lessons are reusable across sessions.
-            experience_store=remember_replan,
+            experience_store=agent_factory.experience_store or remember_replan,
+            # Checkpointed plans/results survive API worker or process failure;
+            # POST /v1/agent/run with resume=true reuses them.
+            checkpoint_store=checkpoint_store or get_checkpoint_store(),
+            reasoning_strategy=reasoning_strategy,
         )
+        orchestrator.agent_factory = agent_factory
+        # The API worker owns and tears down this per-run manager.
+        orchestrator._sandbox_manager = manager  # noqa: SLF001
+        return orchestrator
 
     return _build

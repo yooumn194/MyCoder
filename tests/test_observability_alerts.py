@@ -78,3 +78,29 @@ def test_ttft_recorded_from_first_on_token():
     assert s["avg_ttft_ms"] > 0.0  # first-token latency was captured
     assert s["p95_ttft_ms"] == s["avg_ttft_ms"]  # single call
     assert s["avg_duration_ms"] >= s["avg_ttft_ms"]  # ttft <= full duration
+
+
+def test_reasoning_tokens_are_traced_but_not_double_counted():
+    from mycoder.llm import LLMResponse, _traced
+
+    tracer = LLMTracer()
+
+    class _Fake:
+        _tracer = tracer
+        caller = "llm"
+        model = "reasoning-model"
+
+        @_traced
+        def chat(self, messages):
+            return LLMResponse(
+                content="ok",
+                prompt_tokens=5,
+                completion_tokens=8,
+                reasoning_tokens=3,
+            )
+
+    _Fake().chat([{"role": "user", "content": "hi"}])
+    summary = tracer.get_session_summary("unknown")
+
+    assert summary["reasoning_tokens"] == 3
+    assert summary["total_tokens"] == 13

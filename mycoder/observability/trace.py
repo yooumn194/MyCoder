@@ -1,8 +1,8 @@
 """LLM call-level tracing — the reasoning-layer counterpart to MCPCallTrace
 (mycoder/mcp/observability.py).
 
-One structured LLMCallTrace per LLM HTTP call, aggregated in process memory.
-The `trace()` contextmanager is the integration point: it times the call, lets
+One structured LLMCallTrace per LLM HTTP call, optionally backed by a shared
+SQLite/Redis store. The `trace()` contextmanager times the call and lets
 the caller fill in token usage, and emits a structlog record. All failures are
 recorded (status=error/timeout) and re-raised, never swallowed.
 
@@ -20,6 +20,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterator
+from mycoder.observability.store import TraceStore
 
 from mycoder.sandbox.logger import get_logger
 
@@ -74,21 +75,27 @@ class LLMCallTrace:
     error_msg: str | None = None
     ttft_ms: float | None = None  # time-to-first-token (streaming), None if n/a
     cached_tokens: int = 0  # prompt tokens served from the provider's prefix cache
+    reasoning_tokens: int = 0  # subset of completion tokens used for reasoning
     timestamp: float = field(default_factory=time.time)
 
 
 class LLMTracer:
-    """In-memory LLM trace store + per-session aggregation.
+    """LLM trace recorder + per-session aggregation.
 
-    Process memory only (resets on restart). One instance can serve many
-    sessions; every method is keyed by session_id.
+    ``store=None`` preserves the lightweight CLI/test behavior. API wiring
+    injects a process-independent ObservabilityStore.
     """
 
-    def __init__(self, budget_guard: Any | None = None) -> None:
+    def __init__(
+        self,
+        budget_guard: Any | None = None,
+        store: TraceStore | None = None,
+    ) -> None:
         self._traces: list[LLMCallTrace] = []
         self._lock = threading.Lock()
         self.budget_guard = budget_guard
         self.alert_manager = None
+        self.store = store
 
     def attach_budget_guard(self, guard: Any) -> None:
         """Feed completed calls' token usage into a TokenBudgetGuard."""
@@ -106,8 +113,7 @@ class LLMTracer:
         if self.budget_guard is not None:
             try:
                 budget_ratio = 1.0 - (
-                    self.budget_guard.get_remaining(session_id)
-                    / max(1, self.budget_guard.max_tokens_per_session)
+                    self.budget_guard.get_remaining(session_id) / max(1, self.budget_guard.max_tokens_per_session)
                 )
             except Exception:  # noqa: BLE001
                 pass
@@ -130,6 +136,7 @@ class LLMTracer:
             "prompt_tokens": 0,
             "completion_tokens": 0,
             "cached_tokens": 0,
+            "reasoning_tokens": 0,
             "ttft_ms": None,
         }
         started = time.monotonic()
@@ -138,8 +145,17 @@ class LLMTracer:
         except Exception as exc:  # noqa: BLE001 - record then re-raise
             status = "timeout" if _is_timeout(exc) else "error"
             self._record(
-                session_id, caller, model, 0, 0, _ms(started), status, str(exc),
-                ttft_ms=ctx.get("ttft_ms"), cached_tokens=ctx.get("cached_tokens"),
+                session_id,
+                caller,
+                model,
+                0,
+                0,
+                _ms(started),
+                status,
+                str(exc),
+                ttft_ms=ctx.get("ttft_ms"),
+                cached_tokens=ctx.get("cached_tokens"),
+                reasoning_tokens=ctx.get("reasoning_tokens"),
             )
             logger.warning(
                 "llm_call_failed",
@@ -156,8 +172,17 @@ class LLMTracer:
         completion = int(ctx.get("completion_tokens") or 0)
         duration = _ms(started)
         self._record(
-            session_id, caller, model, prompt, completion, duration, "success", None,
-            ttft_ms=ctx.get("ttft_ms"), cached_tokens=ctx.get("cached_tokens"),
+            session_id,
+            caller,
+            model,
+            prompt,
+            completion,
+            duration,
+            "success",
+            None,
+            ttft_ms=ctx.get("ttft_ms"),
+            cached_tokens=ctx.get("cached_tokens"),
+            reasoning_tokens=ctx.get("reasoning_tokens"),
         )
         logger.info(
             "llm_call",
@@ -166,6 +191,7 @@ class LLMTracer:
             model=model,
             prompt_tokens=prompt,
             completion_tokens=completion,
+            reasoning_tokens=int(ctx.get("reasoning_tokens") or 0),
             total_tokens=prompt + completion,
             duration_ms=duration,
         )
@@ -182,6 +208,7 @@ class LLMTracer:
         error_msg: str | None,
         ttft_ms: float | None = None,
         cached_tokens: int = 0,
+        reasoning_tokens: int = 0,
     ) -> None:
         trace = LLMCallTrace(
             call_id=_new_id(),
@@ -196,9 +223,20 @@ class LLMTracer:
             error_msg=error_msg,
             ttft_ms=ttft_ms,
             cached_tokens=int(cached_tokens or 0),
+            reasoning_tokens=int(reasoning_tokens or 0),
         )
-        with self._lock:
-            self._traces.append(trace)
+        persisted = False
+        if self.store is not None:
+            try:
+                self.store.append_trace(asdict(trace))
+                persisted = True
+            except Exception as exc:  # noqa: BLE001 - tracing cannot break an LLM call
+                logger.warning("trace_store_write_failed", error_msg=str(exc))
+        if not persisted:
+            # Availability fallback: retain the event in this process if the
+            # external store is temporarily unavailable.
+            with self._lock:
+                self._traces.append(trace)
         if self.budget_guard is not None:
             try:
                 self.budget_guard.add_usage(session_id, prompt + completion)
@@ -211,23 +249,58 @@ class LLMTracer:
                 pass
 
     # -------------------------------------------------------------- summary
+    def _snapshot(self, session_id: str | None = None) -> list[LLMCallTrace]:
+        traces: list[LLMCallTrace] = []
+        if self.store is not None:
+            try:
+                for raw in self.store.list_traces(session_id):
+                    try:
+                        traces.append(LLMCallTrace(**raw))
+                    except (TypeError, ValueError):
+                        continue
+            except Exception as exc:  # noqa: BLE001 - local fallback remains readable
+                logger.warning("trace_store_read_failed", error_msg=str(exc))
+        with self._lock:
+            fallback = list(self._traces)
+        if session_id is not None:
+            fallback = [trace for trace in fallback if trace.session_id == session_id]
+        traces.extend(fallback)
+        traces.sort(key=lambda trace: (trace.timestamp, trace.call_id))
+        return traces
+
     def list_sessions(self) -> list[str]:
         """Every session_id seen so far (for report aggregation)."""
+        sessions: set[str] = set()
+        if self.store is not None:
+            try:
+                sessions.update(self.store.list_trace_sessions())
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("trace_store_sessions_failed", error_msg=str(exc))
         with self._lock:
-            return sorted({t.session_id for t in self._traces})
+            sessions.update(trace.session_id for trace in self._traces)
+        return sorted(sessions)
+
+    def reset(self) -> None:
+        """Drop all recorded traces (primarily comparison/test isolation)."""
+        if self.store is not None:
+            self.store.reset_traces()
+        with self._lock:
+            self._traces.clear()
 
     def get_session_summary(self, session_id: str) -> dict:
         """Aggregate counters for one session (total calls, tokens, duration,
         avg/p95, error count)."""
-        with self._lock:
-            traces = [t for t in self._traces if t.session_id == session_id]
-        return self._summarize_traces(traces, session_id)
+        return self._summarize_traces(self._snapshot(session_id), session_id)
 
     def get_global_summary(self) -> dict:
         """Aggregate counters across ALL sessions (monitor-report source)."""
-        with self._lock:
-            traces = list(self._traces)
-        return self._summarize_traces(traces, "<all>")
+        return self._summarize_traces(self._snapshot(), "<all>")
+
+    def get_sessions_summary(self, session_ids: list[str]) -> dict:
+        """Aggregate only an allowed set of sessions (tenant-safe reports)."""
+        allowed = set(session_ids)
+        traces = [trace for trace in self._snapshot() if trace.session_id in allowed]
+        return self._summarize_traces(traces, "<selected>")
 
     def _summarize_traces(self, traces: list, label: str) -> dict:
         n = len(traces)
@@ -236,6 +309,7 @@ class LLMTracer:
             "total_calls": 0,
             "prompt_tokens": 0,
             "completion_tokens": 0,
+            "reasoning_tokens": 0,
             "total_tokens": 0,
             "total_duration_ms": 0.0,
             "avg_duration_ms": 0.0,
@@ -250,23 +324,21 @@ class LLMTracer:
             return empty
         prompt = sum(t.prompt_tokens for t in traces)
         completion = sum(t.completion_tokens for t in traces)
+        reasoning = sum(t.reasoning_tokens for t in traces)
         total_duration = sum(t.duration_ms for t in traces)
         durations = sorted(t.duration_ms for t in traces)
         p95 = durations[min(n - 1, int(n * 0.95) - 1)]
         errors = sum(1 for t in traces if t.status != "success")
         ttfts = [t.ttft_ms for t in traces if t.ttft_ms is not None]
         avg_ttft = sum(ttfts) / len(ttfts) if ttfts else 0.0
-        p95_ttft = (
-            sorted(ttfts)[min(len(ttfts) - 1, int(len(ttfts) * 0.95) - 1)]
-            if ttfts
-            else 0.0
-        )
+        p95_ttft = sorted(ttfts)[min(len(ttfts) - 1, int(len(ttfts) * 0.95) - 1)] if ttfts else 0.0
         cached = sum(t.cached_tokens for t in traces)
         return {
             "session_id": label,
             "total_calls": n,
             "prompt_tokens": prompt,
             "completion_tokens": completion,
+            "reasoning_tokens": reasoning,
             "total_tokens": prompt + completion,
             "total_duration_ms": round(total_duration, 2),
             "avg_duration_ms": round(total_duration / n, 2),
@@ -278,9 +350,7 @@ class LLMTracer:
             "error_count": errors,
         }
 
-    def get_cost_estimate(
-        self, session_id: str, price_per_1k: dict[str, Any] | None = None
-    ) -> dict:
+    def get_cost_estimate(self, session_id: str, price_per_1k: dict[str, Any] | None = None) -> dict:
         """Per-model cost estimate in USD.
 
         price_per_1k shape (USD per 1k tokens):
@@ -289,13 +359,10 @@ class LLMTracer:
         entry fall back to "default"; models with no price contribute 0.
         """
         price_per_1k = price_per_1k or {}
-        with self._lock:
-            traces = [t for t in self._traces if t.session_id == session_id]
+        traces = self._snapshot(session_id)
         per_model: dict[str, dict[str, Any]] = {}
         for t in traces:
-            bucket = per_model.setdefault(
-                t.model, {"calls": 0, "prompt": 0, "completion": 0, "cost": 0.0}
-            )
+            bucket = per_model.setdefault(t.model, {"calls": 0, "prompt": 0, "completion": 0, "cost": 0.0})
             bucket["calls"] += 1
             bucket["prompt"] += t.prompt_tokens
             bucket["completion"] += t.completion_tokens
@@ -304,9 +371,7 @@ class LLMTracer:
         for model, b in per_model.items():
             rate = price_per_1k.get(model) or price_per_1k.get("default")
             if isinstance(rate, dict):
-                cost = b["prompt"] / 1000 * float(rate.get("input", 0)) + b[
-                    "completion"
-                ] / 1000 * float(rate.get("output", 0))
+                cost = b["prompt"] / 1000 * float(rate.get("input", 0)) + b["completion"] / 1000 * float(rate.get("output", 0))
             elif isinstance(rate, (int, float)):
                 cost = (b["prompt"] + b["completion"]) / 1000 * float(rate)
             else:

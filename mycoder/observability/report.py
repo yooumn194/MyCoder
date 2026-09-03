@@ -17,6 +17,7 @@ def build_monitor_report(
     *,
     sessions: list[dict] | None = None,
     price_per_1k: dict | None = None,
+    trace_session_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Aggregate one monitor snapshot.
 
@@ -24,9 +25,15 @@ def build_monitor_report(
     sessions: list of {status, ...} run records from a StateBackend (production
         success rate); None skips that section.
     price_per_1k: price table for cost; None -> costs skipped.
+    trace_session_ids: optional tenant-safe allowlist; None includes all traces.
     """
-    global_llm = tracer.get_global_summary()
-    session_ids = tracer.list_sessions()
+    if trace_session_ids is None:
+        session_ids = tracer.list_sessions()
+        global_llm = tracer.get_global_summary()
+    else:
+        allowed = set(trace_session_ids)
+        session_ids = [sid for sid in tracer.list_sessions() if sid in allowed]
+        global_llm = tracer.get_sessions_summary(session_ids)
     per_session: dict[str, dict[str, Any]] = {}
     total_cost = 0.0
     for sid in session_ids:

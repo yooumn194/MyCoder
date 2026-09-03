@@ -2,8 +2,8 @@
 
 An AlertManager evaluates a metrics dict (session summary from LLMTracer, or a
 test harness) against AlertRules — success rate, p95 latency, token budget —
-and emits a structlog.error per fired alert, debounced by a per-(rule, session)
-cooldown so a stuck session can't spam.
+and emits a structlog.error per fired alert. An optional ObservabilityStore
+makes cooldown claims and alert history atomic across workers/restarts.
 
 Rules are threshold checks with an operator; wiring: attach the manager to an
 LLMTracer and it evaluates after every recorded call.
@@ -12,6 +12,7 @@ LLMTracer and it evaluates after every recorded call.
 from __future__ import annotations
 
 import time
+from mycoder.observability.store import AlertStore
 
 from mycoder.sandbox.logger import get_logger
 
@@ -61,10 +62,16 @@ def default_rules() -> list[AlertRule]:
 class AlertManager:
     """Evaluates metrics against rules and emits debounced alerts."""
 
-    def __init__(self, rules: list[AlertRule] | None = None, log=logger) -> None:
+    def __init__(
+        self,
+        rules: list[AlertRule] | None = None,
+        log=logger,
+        store: AlertStore | None = None,
+    ) -> None:
         self.rules = rules if rules is not None else default_rules()
         self._log = log
         self._last_fired: dict[tuple[str, str], float] = {}
+        self.store = store
 
     def evaluate(self, session_id: str, metrics: dict) -> list[dict]:
         """Return alerts fired for `metrics` (respecting per-rule cooldown)."""
@@ -77,10 +84,6 @@ class AlertManager:
             if not rule.breached(float(value)):
                 continue
             key = (session_id, rule.name)
-            last = self._last_fired.get(key)
-            if last is not None and now - last < rule.cooldown_seconds:
-                continue
-            self._last_fired[key] = now
             alert = {
                 "session_id": session_id,
                 "rule": rule.name,
@@ -89,6 +92,16 @@ class AlertManager:
                 "threshold": rule.threshold,
                 "severity": rule.severity,
             }
+            if self.store is not None:
+                if not self.store.claim_alert(
+                    session_id, rule.name, rule.cooldown_seconds, alert
+                ):
+                    continue
+            else:
+                last = self._last_fired.get(key)
+                if last is not None and now - last < rule.cooldown_seconds:
+                    continue
+                self._last_fired[key] = now
             fired.append(alert)
             self._log.error(
                 "alert_fired",
@@ -102,4 +115,12 @@ class AlertManager:
         return fired
 
     def reset(self) -> None:
+        if self.store is not None:
+            self.store.reset_alerts()
         self._last_fired.clear()
+
+    def list_alerts(self, limit: int = 100) -> list[dict]:
+        """Persisted alert history; local-only managers return an empty list."""
+        if self.store is None:
+            return []
+        return self.store.list_alerts(limit)
