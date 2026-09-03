@@ -9,8 +9,44 @@ drives the agent purely through the HTTP API and grades its code with pytest.
 |---|---|
 | `dataset.json` | 30 hand-written coding problems (10 bugfix / 8 refactor / 7 implement / 5 cross-file; 10 easy / 12 medium / 8 hard). Each has a self-contained English prompt, context files, and a deterministic pytest verification. Pure stdlib, no third-party deps. |
 | `runner.py` | Executes the dataset: writes context files, POSTs `/v1/agent/run`, polls `/v1/agent/status` to a terminal state, then runs each problem's pytest verification. Supports `--parallel`, `--resume`, `--dry-run`. |
+| `matrix.py` | Fixed 30-task × 3-repeat ablation: single ReAct / Plan-and-Execute / Reflection versus multi-agent AUTO. Writes a dataset hash/config manifest, repeat mean/stddev, and failure distributions. |
 | `scorer.py` | Pass@1 statistics (overall / by category / by difficulty), failure-reason distribution, `summary.json`, `report.md`, optional matplotlib `chart.png`. |
 | `_gen_dataset.py` | Generator that emits `dataset.json` (edit problems here and regenerate). |
+| `p1_openrouter_perf.py` | OpenRouter online benchmark for P1-4 reasoning strategies and P1-5 polluted-memory correction. |
+
+## P1-4 / P1-5 OpenRouter performance benchmark
+
+The benchmark uses the project's OpenAI-compatible OpenRouter client, streams
+every response, and records wall latency, TTFT, prompt/completion/reasoning
+tokens and task-specific quality indicators. It never accepts the API key as a
+CLI argument, so the key does not leak through shell history or the process
+list.
+
+Online runs write their JSON report to the path passed with `--report`.
+Reports stay under the gitignored `results/` directory by default.
+
+```bash
+# Validate the matrix without network calls (15 planned calls by default)
+python -m eval_bench.p1_openrouter_perf --dry-run
+
+# Real OpenRouter run using minimax/minimax-m3:free
+export OPENROUTER_API_KEY=sk-or-...
+python -m eval_bench.p1_openrouter_perf \
+  --model minimax/minimax-m3:free \
+  --request-delay 1 \
+  --report results/perf/p1-openrouter.json
+
+# Run only one suite when free-tier limits are tight
+python -m eval_bench.p1_openrouter_perf --suite reasoning
+python -m eval_bench.p1_openrouter_perf --suite memory
+```
+
+P1-4 runs the same three-task matrix under ReAct, Plan-and-Execute and
+Reflection. P1-5 creates gold-labelled conflicting memories, measures conflict
+pair precision/recall, then compares OpenRouter answer accuracy before and
+after the known polluted entry is deprecated. The gold label is explicit in
+the report: conflict detection finds suspicious pairs; it does not pretend to
+know automatically which side is true.
 
 ## How it works
 
@@ -38,6 +74,21 @@ drives the agent purely through the HTTP API and grades its code with pytest.
    python -m eval_bench.scorer --results results/<run-timestamp> --chart
    ```
 
+4. **Run the full ablation matrix:**
+
+   ```bash
+   # Schema/config check only: plans 30 × 3 × 4 = 360 API runs
+   python -m eval_bench.matrix --dry-run
+
+   # Authenticated services read the key from env, never a CLI argument
+   export MYCODER_BENCH_API_KEY=replace-with-a-secret
+   python -m eval_bench.matrix --base-url http://localhost:8000
+   ```
+
+   `manifest.json` freezes the dataset SHA-256, model/provider/temperature,
+   variants and repeat count. `summary.json` reports repeat-level pass-rate
+   mean/stddev, latency/token mean/stddev, and failure-class distribution.
+
 ## CLI reference
 
 ```
@@ -49,6 +100,9 @@ runner.py
   --parallel N       concurrent problems (default 3)
   --resume           skip problems already in --results/raw_results.json
   --dry-run          validate the dataset schema and exit
+  --execution-mode   single | multi
+  --reasoning-strategy auto | react | plan_execute | reflection
+  --orchestration-strategy auto | sequential | parallel | conditional
 
 scorer.py
   --results DIR      results/<run> directory (required)

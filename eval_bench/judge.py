@@ -93,12 +93,14 @@ def _resolve_llm():
     cfg = Config.from_env()
     if not cfg.api_key:
         return None
-    from mycoder.llm import LLM
+    from mycoder.llm import LLM, LiteLLM
 
-    return LLM(
+    llm_cls = LiteLLM if cfg.provider == "litellm" else LLM
+    return llm_cls(
         model=cfg.model,
         api_key=cfg.api_key,
         base_url=cfg.base_url,
+        provider=cfg.provider,
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
     )

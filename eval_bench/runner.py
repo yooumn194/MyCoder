@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -141,19 +142,35 @@ def verify(problem: dict, workdir: Path) -> dict:
     }
 
 
-def _post_run(client, base_url: str, task: str, session_id: str, max_tokens: int) -> tuple[int, dict]:
+def _headers() -> dict[str, str]:
+    key = os.getenv("MYCODER_BENCH_API_KEY", "").strip()
+    return {"X-API-Key": key} if key else {}
+
+
+def _post_run(
+    client,
+    base_url: str,
+    task: str,
+    session_id: str,
+    max_tokens: int,
+    request_options: dict | None = None,
+) -> tuple[int, dict]:
+    payload = {"task": task, "session_id": session_id, "max_tokens": max_tokens}
+    payload.update(request_options or {})
     if httpx is not None:
         resp = client.post(
             f"{base_url}/v1/agent/run",
-            json={"task": task, "session_id": session_id, "max_tokens": max_tokens},
+            json=payload,
+            headers=_headers(),
             timeout=30,
         )
         return resp.status_code, _safe_json(resp)
     import urllib.request
 
-    body = json_dumps({"task": task, "session_id": session_id, "max_tokens": max_tokens})
+    body = json_dumps(payload)
     req = urllib.request.Request(
-        f"{base_url}/v1/agent/run", data=body.encode(), headers={"Content-Type": "application/json"},
+        f"{base_url}/v1/agent/run", data=body.encode(),
+        headers={"Content-Type": "application/json", **_headers()},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=30) as r:
@@ -179,7 +196,16 @@ def json_loads(raw) -> dict:
     return json.loads(raw)
 
 
-def run_one(problem: dict, base_url: str, workspace: Path, results_dir: Path, run_id: str, client, variant: str = "default") -> dict:
+def run_one(
+    problem: dict,
+    base_url: str,
+    workspace: Path,
+    results_dir: Path,
+    run_id: str,
+    client,
+    variant: str = "default",
+    request_options: dict | None = None,
+) -> dict:
     """Execute one problem end-to-end and return its result record."""
     qid = problem["id"]
     workdir = workspace / qid
@@ -196,7 +222,9 @@ def run_one(problem: dict, base_url: str, workspace: Path, results_dir: Path, ru
     started = time.time()
     perf: dict | None = None
 
-    status_code, resp = _post_run(client, base_url, task, session_id, int(problem["max_tokens"]))
+    status_code, resp = _post_run(
+        client, base_url, task, session_id, int(problem["max_tokens"]), request_options
+    )
     _log(log, f"POST /run -> {status_code} {resp}")
     if status_code != 202:
         return _result(problem, "failed", None, None, 0, None, "RUN_REJECTED", f"http {status_code}: {resp}", variant=variant, perf=perf)
@@ -207,7 +235,9 @@ def run_one(problem: dict, base_url: str, workspace: Path, results_dir: Path, ru
     perf: dict | None = None
     while time.time() < deadline:
         if httpx is not None:
-            sr = client.get(f"{base_url}/v1/agent/status/{session_id}", timeout=30)
+            sr = client.get(
+                f"{base_url}/v1/agent/status/{session_id}", headers=_headers(), timeout=30
+            )
             if sr.status_code == 200:
                 data = _safe_json(sr)
                 agent_status = data.get("status")
@@ -217,6 +247,22 @@ def run_one(problem: dict, base_url: str, workspace: Path, results_dir: Path, ru
                 if data.get("perf"):
                     perf = data["perf"]
                 _log(log, f"poll status={agent_status} token_usage={token_usage}")
+        else:  # pragma: no cover - exercised only without the httpx extra
+            import urllib.error
+            import urllib.request
+
+            req = urllib.request.Request(
+                f"{base_url}/v1/agent/status/{session_id}", headers=_headers()
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=30) as status_response:
+                    data = json_loads(status_response.read())
+                agent_status = data.get("status")
+                token_usage = data.get("token_usage")
+                error = data.get("error") or error
+                perf = data.get("perf") or perf
+            except urllib.error.HTTPError:
+                pass
         time.sleep(_POLL_INTERVAL)
         if agent_status in _TERMINAL_STATUSES:
             break
@@ -271,6 +317,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--resume", action="store_true", help="skip problems already recorded in --results/raw_results.json")
     parser.add_argument("--dry-run", action="store_true", help="validate the dataset schema and exit")
     parser.add_argument("--tag", default="default", help="variant label recorded on every result (for scorer --compare)")
+    parser.add_argument("--workspace-id", default="default", help="API tenant-local workspace id")
+    parser.add_argument("--execution-mode", choices=("single", "multi"), default="multi")
+    parser.add_argument(
+        "--reasoning-strategy",
+        choices=("auto", "react", "plan_execute", "reflection"),
+        default="auto",
+    )
+    parser.add_argument(
+        "--orchestration-strategy",
+        choices=("auto", "sequential", "parallel", "conditional"),
+        default="auto",
+    )
     args = parser.parse_args(argv)
 
     data = load_dataset(Path(args.dataset))
@@ -308,9 +366,16 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[run] results -> {results_dir}")
 
     with ThreadPoolExecutor(max_workers=max(1, args.parallel)) as pool:
+        request_options = {
+            "workspace_id": args.workspace_id,
+            "execution_mode": args.execution_mode,
+            "reasoning_strategy": args.reasoning_strategy,
+            "orchestration_strategy": args.orchestration_strategy,
+        }
         futures = {
             pool.submit(
-                run_one, p, args.base_url, workspace, results_dir, run_id, client, args.tag
+                run_one, p, args.base_url, workspace, results_dir, run_id, client,
+                args.tag, request_options,
             ): p["id"]
             for p in todo
         }
