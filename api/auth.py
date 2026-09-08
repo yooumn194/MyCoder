@@ -52,7 +52,15 @@ def get_principal(
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> Principal:
     keys = _configured_keys()
-    require_auth = os.getenv("MYCODER_REQUIRE_AUTH", "").lower() in {"1", "true", "yes"}
+    # The HTTP service is secure by default. Trusted loopback-only development
+    # may opt out explicitly with MYCODER_REQUIRE_AUTH=false; absence of the
+    # variable must never turn an accidentally exposed API into an open agent.
+    require_auth = os.getenv("MYCODER_REQUIRE_AUTH", "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
     if not keys and not require_auth:
         return Principal(tenant_id="local", key_id="local-dev")
     if not keys:

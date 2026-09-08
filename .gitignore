@@ -21,3 +21,7 @@ venv/
 results/
 eval_bench/workspace/
 workspaces/
+# Personal interview notes and local reports are intentionally not published.
+# The three documentation files already tracked under docs/ remain tracked;
+# this rule prevents new private material from being added accidentally.
+docs/

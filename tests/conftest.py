@@ -45,6 +45,9 @@ _CONFIG_ENV_VARS = (
     "MYCODER_OBSERVABILITY_PATH",
     "MYCODER_OBSERVABILITY_TTL_SECONDS",
     "MYCODER_OBSERVABILITY_MAX_ALERTS",
+    "MYCODER_API_KEYS",
+    "MYCODER_REQUIRE_AUTH",
+    "MYCODER_FETCH_ALLOWED_HOSTS",
 )
 
 
@@ -53,6 +56,9 @@ def _isolate_environment(monkeypatch):
     """No developer .env leaks into the tests."""
     for key in _CONFIG_ENV_VARS:
         monkeypatch.delenv(key, raising=False)
+    # Tests that exercise local-dev endpoints opt out explicitly. Dedicated
+    # auth tests delete this override to verify the secure production default.
+    monkeypatch.setenv("MYCODER_REQUIRE_AUTH", "false")
     # from_env() re-reads .env; make that a no-op so a local .env can never
     # override the pinned state above.
     monkeypatch.setattr(config_mod, "_load_dotenv", lambda: None)

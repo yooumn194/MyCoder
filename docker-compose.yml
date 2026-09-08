@@ -10,7 +10,7 @@ services:
   api:
     build: .
     ports:
-      - "8000:8000"
+      - "${MYCODER_API_BIND:-127.0.0.1}:8000:8000"
     environment:
       STATE_BACKEND: redis
       REDIS_URL: redis://redis:6379/0
@@ -24,7 +24,7 @@ services:
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       MYCODER_API_KEYS: ${MYCODER_API_KEYS:-}
-      MYCODER_REQUIRE_AUTH: ${MYCODER_REQUIRE_AUTH:-false}
+      MYCODER_REQUIRE_AUTH: ${MYCODER_REQUIRE_AUTH:-true}
       MYCODER_WORKSPACE_ROOT: /workspaces
     volumes:
       - ./workspaces:/workspaces
@@ -34,8 +34,6 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

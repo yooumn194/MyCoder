@@ -9,7 +9,8 @@ FROM python:3.12-slim
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    MYCODER_REQUIRE_AUTH=true
 
 COPY pyproject.toml README.md ./
 COPY mycoder/ mycoder/

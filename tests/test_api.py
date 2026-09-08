@@ -246,6 +246,16 @@ def test_status_404_for_unknown_session(client):
     assert client.get("/v1/agent/status/nope").status_code == 404
 
 
+def test_api_auth_is_required_by_default(client, monkeypatch):
+    monkeypatch.delenv("MYCODER_REQUIRE_AUTH", raising=False)
+    monkeypatch.delenv("MYCODER_API_KEYS", raising=False)
+
+    response = client.get("/v1/agent/status/nope")
+
+    assert response.status_code == 503
+    assert "authentication is required" in response.json()["detail"]
+
+
 def test_api_key_auth_and_cross_tenant_session_isolation(client, monkeypatch):
     monkeypatch.setenv("MYCODER_API_KEYS", '{"tenant-a":"secret-a","tenant-b":"secret-b"}')
     backend = app.dependency_overrides[server.get_state_backend]()

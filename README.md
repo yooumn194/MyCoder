@@ -96,6 +96,7 @@ for _ in range(max_rounds):          # 防死循环：轮次上限
 - **推理策略**：ReAct（默认）/ Plan-and-Execute / Reflection 三选一，未指定时**按任务自动路由**（重构→plan_execute、修 bug→reflection），`/strategy` 可运行时切换
 - **工具选择**：按当前会话相关性注入 Top-K 工具（核心 11 个常驻 + 相关度排序），省 token 且减少误选
 - **幂等与纠错**：相同 `(工具, 参数)` 幂等调用命中缓存不重复执行；失败按分类确定性重试（可重试 2 次、超时翻倍），非幂等写不自动重试
+- **收敛控制**：统一限制模型轮次、工具调用请求数和相同动作次数；连续无新证据时熔断，并在硬 token 上限前预留一次无工具总结调用
 
 ### ② LLM 推理层
 
@@ -202,8 +203,9 @@ mem 512m · cpu 0.5 核 · pids 128（防 fork bomb）
 | `MYCODER_OBSERVABILITY_TTL_SECONDS` | `604800` | SQLite/Redis Trace、告警历史保留时间（秒） |
 | `MYCODER_OBSERVABILITY_MAX_ALERTS` | `10000` | SQLite/Redis 告警历史最大条数 |
 | `MYCODER_API_KEYS` | — | 租户 API key：JSON（`{"team":"secret"}`）或 `team=secret`；配置后 API 自动要求认证 |
-| `MYCODER_REQUIRE_AUTH` | `false` | 设为 `true` 可禁止无 key 的本地开发模式 |
+| `MYCODER_REQUIRE_AUTH` | `true` | API 默认必须认证；仅可信的本机开发可显式设为 `false` |
 | `MYCODER_WORKSPACE_ROOT` | 服务 cwd | 认证租户工作区根；实际目录为 `<root>/<tenant>/<workspace_id>` |
+| `MYCODER_FETCH_ALLOWED_HOSTS` | — | `fetch_url` 默认拒绝私网目标；可信本地开发可显式列出允许的主机名，逗号分隔 |
 | `MYCODER_JOB_LEASE_SECONDS` | `60` | worker job/session lease，运行期间自动续租 |
 | `MYCODER_JOB_MAX_ATTEMPTS` | `3` | durable job 最大执行次数；超限后进入死信区 |
 | `MYCODER_JOB_RETRY_BASE_SECONDS` / `MYCODER_JOB_RETRY_MAX_SECONDS` | `1` / `30` | 带抖动指数退避的起始/上限秒数 |
@@ -212,6 +214,11 @@ mem 512m · cpu 0.5 核 · pids 128（防 fork bomb）
 | `MYCODER_SANDBOX_MEM/CPU/PIDS` | `512m/0.5/128` | 沙箱资源 |
 | `MYCODER_SANDBOX_IDLE_TIMEOUT` | `600` | 沙箱空闲回收（秒，0 禁用） |
 | `MYCODER_SESSION_BUDGET` | `100000` | 会话 token 预算 |
+| `MYCODER_CONVERGENCE_MAX_ROUNDS` | `16` | 单次用户任务的模型动作轮次上限（同时受 Agent 自身 `max_rounds` 限制） |
+| `MYCODER_CONVERGENCE_MAX_TOOL_CALLS` | `32` | 单次任务允许进入执行层的工具调用请求总数 |
+| `MYCODER_CONVERGENCE_MAX_IDENTICAL_CALLS` | `2` | 相同工具及相同参数最多实际执行次数 |
+| `MYCODER_CONVERGENCE_MAX_STAGNANT_ROUNDS` | `3` | 连续无新证据或成功状态变更的轮次上限 |
+| `MYCODER_CONVERGENCE_SOFT_BUDGET_RATIO` | `0.85` | 达到该预算比例后停止动作并尝试生成最终总结 |
 | `MYCODER_RATE_LIMIT` | 关 | API 每 tenant+client 的请求/分钟；SQLite/Redis 跨 worker 原子共享 |
 | `MYCODER_INJECTION_GUARD` | `on` | 注入防御开关 |
 | `MYCODER_MODEL_TIER` | `standard` | 模型分级 |
@@ -232,11 +239,12 @@ MYCODER_PROFILE=deepseek uvicorn api.server:app
 `MYCODER_PROFILE`/`--provider` 会整体选择 `_PROVIDER_DEFAULTS` 中的模型、端点和专属 Key。若某个 provider 需要固定非默认模型，只需一次性设置，例如 `MYCODER_OPENROUTER_MODEL=openai/gpt-oss-120b:free`。
 
 ```bash
-mycoder-api --host 0.0.0.0 --port 8000    # 或 docker compose up --build
+# 默认仅监听本机；API 默认强制认证
+export MYCODER_API_KEYS='{"team-a":"replace-with-a-secret"}'
+mycoder-api --host 127.0.0.1 --port 8000
 
 # 多 worker/生产模式（先安装 pip install -e '.[api]'）
 export STATE_BACKEND=redis REDIS_URL=redis://localhost:6379/0
-export MYCODER_API_KEYS='{"team-a":"replace-with-a-secret"}'
 mkdir -p team-a/repo-1  # 或把 MYCODER_WORKSPACE_ROOT 指向已有租户工作区根
 
 # 首次运行；每个成功/部分成功的子步骤会写 checkpoint
@@ -263,6 +271,14 @@ curl -N -H 'X-API-Key: replace-with-a-secret' \
 curl -H 'X-API-Key: replace-with-a-secret' \
   http://localhost:8000/v1/agent/dead-letter
 ```
+
+`docker compose up --build` 默认同样只把 API 映射到 `127.0.0.1:8000`，Redis
+仅在 Compose 内部网络可见。需要经反向代理对外提供服务时，仍应保留 API key
+认证；仅在可信的回环开发环境中才能显式设置 `MYCODER_REQUIRE_AUTH=false`。
+
+`fetch_url` 只允许解析到公网 IP 的 HTTP(S) 地址，并会逐跳校验重定向，阻止
+访问 loopback、私网、链路本地和云元数据地址。若本地开发确实需要读取某个
+内网服务，应通过 `MYCODER_FETCH_ALLOWED_HOSTS=localhost` 之类的显式白名单开启。
 
 恢复请求会校验原 task，checkpoint 不存在返回 404、task 不一致或同 session 正在执行返回 409。任务成功后 checkpoint 自动清理；失败或进程中断时保留。
 
