@@ -1,6 +1,9 @@
 """P2 SLO alerts (observability/alerts.py + LLMTracer wiring)."""
 
+import pytest
+
 from mycoder.observability.alerts import AlertManager, AlertRule, default_rules
+from mycoder.observability.budget import TokenBudgetExceeded, TokenBudgetGuard
 from mycoder.observability.trace import LLMTracer
 
 
@@ -104,3 +107,31 @@ def test_reasoning_tokens_are_traced_but_not_double_counted():
 
     assert summary["reasoning_tokens"] == 3
     assert summary["total_tokens"] == 13
+
+
+def test_session_budget_is_enforced_after_each_llm_call():
+    tracer = LLMTracer()
+    guard = TokenBudgetGuard(max_tokens_per_session=10, tracer=tracer)
+    tracer.register_budget_guard("budgeted", guard)
+
+    with tracer.trace("budgeted", "api", "model") as ctx:
+        ctx["prompt_tokens"] = 6
+        ctx["completion_tokens"] = 3
+
+    with pytest.raises(TokenBudgetExceeded) as exc_info:
+        with tracer.trace("budgeted", "api", "model") as ctx:
+            ctx["prompt_tokens"] = 1
+            ctx["completion_tokens"] = 1
+
+    assert exc_info.value.used_tokens == 11
+    assert tracer.get_session_summary("budgeted")["total_calls"] == 2
+
+    # Once exhausted, the next provider call is rejected before entering it.
+    entered = False
+    with pytest.raises(TokenBudgetExceeded):
+        with tracer.trace("budgeted", "api", "model"):
+            entered = True
+    assert entered is False
+    assert tracer.get_session_summary("budgeted")["total_calls"] == 2
+
+    tracer.unregister_budget_guard("budgeted", guard)

@@ -1056,6 +1056,8 @@ _ALL = _BUGFIX + _REFACTOR + _IMPLEMENT + _CROSS_FILE
 
 
 def build() -> list[dict]:
+    session_budgets = {"easy": 96_000, "medium": 128_000, "hard": 160_000}
+
     problems: list[dict] = []
     for p in _ALL:
         entry = {
@@ -1066,7 +1068,7 @@ def build() -> list[dict]:
             "context_files": p["context_files"],
             "verification": p["verification"],
             "timeout_seconds": 120 if p["difficulty"] != "hard" else 180,
-            "max_tokens": 8000,
+            "max_tokens": session_budgets[p["difficulty"]],
         }
         problems.append(entry)
     return problems

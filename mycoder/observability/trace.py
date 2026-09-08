@@ -94,12 +94,30 @@ class LLMTracer:
         self._traces: list[LLMCallTrace] = []
         self._lock = threading.Lock()
         self.budget_guard = budget_guard
+        self._session_budget_guards: dict[str, Any] = {}
         self.alert_manager = None
         self.store = store
 
     def attach_budget_guard(self, guard: Any) -> None:
         """Feed completed calls' token usage into a TokenBudgetGuard."""
         self.budget_guard = guard
+
+    def register_budget_guard(self, session_id: str, guard: Any) -> None:
+        """Bind a hard budget to one session without affecting other runs."""
+        with self._lock:
+            self._session_budget_guards[session_id] = guard
+
+    def unregister_budget_guard(self, session_id: str, guard: Any | None = None) -> None:
+        """Remove a session guard, optionally only when it is the same object."""
+        with self._lock:
+            current = self._session_budget_guards.get(session_id)
+            if current is not None and (guard is None or current is guard):
+                self._session_budget_guards.pop(session_id, None)
+
+    def _budget_guard_for(self, session_id: str):
+        with self._lock:
+            guard = self._session_budget_guards.get(session_id)
+        return guard if guard is not None else self.budget_guard
 
     def attach_alert_manager(self, manager) -> None:
         """Evaluate SLO alerts (observability/alerts.py) after every call."""
@@ -110,10 +128,11 @@ class LLMTracer:
         n = summary["total_calls"]
         errors = summary["error_count"]
         budget_ratio = None
-        if self.budget_guard is not None:
+        guard = self._budget_guard_for(session_id)
+        if guard is not None:
             try:
                 budget_ratio = 1.0 - (
-                    self.budget_guard.get_remaining(session_id) / max(1, self.budget_guard.max_tokens_per_session)
+                    guard.get_remaining(session_id) / max(1, guard.max_tokens_per_session)
                 )
             except Exception:  # noqa: BLE001
                 pass
@@ -139,6 +158,9 @@ class LLMTracer:
             "reasoning_tokens": 0,
             "ttft_ms": None,
         }
+        guard = self._budget_guard_for(session_id)
+        if guard is not None:
+            guard.check_and_enforce(session_id)
         started = time.monotonic()
         try:
             yield ctx
@@ -184,6 +206,8 @@ class LLMTracer:
             cached_tokens=ctx.get("cached_tokens"),
             reasoning_tokens=ctx.get("reasoning_tokens"),
         )
+        if guard is not None:
+            guard.check_and_enforce(session_id)
         logger.info(
             "llm_call",
             session_id=session_id,

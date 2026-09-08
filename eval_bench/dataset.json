@@ -13,7 +13,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 120,
-    "max_tokens": 8000
+    "max_tokens": 96000
   },
   {
     "id": "bugfix-002",
@@ -29,7 +29,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 120,
-    "max_tokens": 8000
+    "max_tokens": 96000
   },
   {
     "id": "bugfix-003",
@@ -45,7 +45,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 120,
-    "max_tokens": 8000
+    "max_tokens": 96000
   },
   {
     "id": "bugfix-004",
@@ -61,7 +61,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 120,
-    "max_tokens": 8000
+    "max_tokens": 96000
   },
   {
     "id": "bugfix-005",
@@ -77,7 +77,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 120,
-    "max_tokens": 8000
+    "max_tokens": 96000
   },
   {
     "id": "bugfix-006",
@@ -93,7 +93,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 120,
-    "max_tokens": 8000
+    "max_tokens": 128000
   },
   {
     "id": "bugfix-007",
@@ -109,7 +109,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 120,
-    "max_tokens": 8000
+    "max_tokens": 128000
   },
   {
     "id": "bugfix-008",
@@ -125,7 +125,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 120,
-    "max_tokens": 8000
+    "max_tokens": 128000
   },
   {
     "id": "bugfix-009",
@@ -141,7 +141,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 120,
-    "max_tokens": 8000
+    "max_tokens": 128000
   },
   {
     "id": "bugfix-010",
@@ -157,7 +157,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 180,
-    "max_tokens": 8000
+    "max_tokens": 160000
   },
   {
     "id": "refactor-001",
@@ -173,7 +173,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 120,
-    "max_tokens": 8000
+    "max_tokens": 96000
   },
   {
     "id": "refactor-002",
@@ -189,7 +189,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 120,
-    "max_tokens": 8000
+    "max_tokens": 96000
   },
   {
     "id": "refactor-003",
@@ -205,7 +205,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 120,
-    "max_tokens": 8000
+    "max_tokens": 128000
   },
   {
     "id": "refactor-004",
@@ -221,7 +221,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 120,
-    "max_tokens": 8000
+    "max_tokens": 128000
   },
   {
     "id": "refactor-005",
@@ -237,7 +237,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 120,
-    "max_tokens": 8000
+    "max_tokens": 128000
   },
   {
     "id": "refactor-006",
@@ -253,7 +253,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 120,
-    "max_tokens": 8000
+    "max_tokens": 128000
   },
   {
     "id": "refactor-007",
@@ -269,7 +269,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 180,
-    "max_tokens": 8000
+    "max_tokens": 160000
   },
   {
     "id": "refactor-008",
@@ -285,7 +285,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 180,
-    "max_tokens": 8000
+    "max_tokens": 160000
   },
   {
     "id": "implement-001",
@@ -301,7 +301,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 120,
-    "max_tokens": 8000
+    "max_tokens": 96000
   },
   {
     "id": "implement-002",
@@ -317,7 +317,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 120,
-    "max_tokens": 8000
+    "max_tokens": 96000
   },
   {
     "id": "implement-003",
@@ -333,7 +333,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 120,
-    "max_tokens": 8000
+    "max_tokens": 128000
   },
   {
     "id": "implement-004",
@@ -349,7 +349,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 120,
-    "max_tokens": 8000
+    "max_tokens": 128000
   },
   {
     "id": "implement-005",
@@ -365,7 +365,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 120,
-    "max_tokens": 8000
+    "max_tokens": 128000
   },
   {
     "id": "implement-006",
@@ -381,7 +381,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 180,
-    "max_tokens": 8000
+    "max_tokens": 160000
   },
   {
     "id": "implement-007",
@@ -397,7 +397,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 180,
-    "max_tokens": 8000
+    "max_tokens": 160000
   },
   {
     "id": "cross_file-001",
@@ -414,7 +414,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 120,
-    "max_tokens": 8000
+    "max_tokens": 96000
   },
   {
     "id": "cross_file-002",
@@ -431,7 +431,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 120,
-    "max_tokens": 8000
+    "max_tokens": 128000
   },
   {
     "id": "cross_file-003",
@@ -448,7 +448,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 180,
-    "max_tokens": 8000
+    "max_tokens": 160000
   },
   {
     "id": "cross_file-004",
@@ -466,7 +466,7 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 180,
-    "max_tokens": 8000
+    "max_tokens": 160000
   },
   {
     "id": "cross_file-005",
@@ -484,6 +484,6 @@
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 180,
-    "max_tokens": 8000
+    "max_tokens": 160000
   }
 ]

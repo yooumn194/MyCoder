@@ -218,8 +218,11 @@ def run_one(
 
     task = effective_prompt(problem, workspace)
     session_id = f"eval-{qid}-{run_id}"
-    deadline = time.time() + int(problem["timeout_seconds"])
-    started = time.time()
+    # Watchdogs measure elapsed duration, so they must not use the wall clock:
+    # NTP/manual clock adjustments can otherwise expire a task immediately or
+    # keep it alive past its limit.
+    started = time.monotonic()
+    deadline = started + int(problem["timeout_seconds"])
     perf: dict | None = None
 
     status_code, resp = _post_run(
@@ -233,7 +236,7 @@ def run_one(
     token_usage = None
     error: dict | None = None
     perf: dict | None = None
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         if httpx is not None:
             sr = client.get(
                 f"{base_url}/v1/agent/status/{session_id}", headers=_headers(), timeout=30
@@ -267,7 +270,7 @@ def run_one(
         if agent_status in _TERMINAL_STATUSES:
             break
 
-    duration = round(time.time() - started, 2)
+    duration = round(time.monotonic() - started, 2)
     if agent_status not in _TERMINAL_STATUSES:
         agent_status = "timeout"
         _log(log, "watchdog: marked timeout (agent did not reach terminal status)")

@@ -428,6 +428,8 @@ async def _run_agent(
 
     subtasks is passed through when the client supplied one; when None the
     Orchestrator decomposes the task itself via the TaskPlanner."""
+    tracer = get_tracer()
+    budget_guard = TokenBudgetGuard(max_tokens_per_session=max_tokens, tracer=tracer)
     bind_contextvars(session_id=session_id)
     manager = None
     try:
@@ -443,8 +445,7 @@ async def _run_agent(
             },
         )
         build = get_orchestrator(state_backend)
-        # Per-request token budget, fed by the shared tracer (source of truth).
-        budget_guard = TokenBudgetGuard(max_tokens_per_session=max_tokens, tracer=get_tracer())
+        tracer.register_budget_guard(session_id, budget_guard)
         checkpoint_store = checkpoint_store or get_checkpoint_store()
         orchestrator = build(
             session_id,
@@ -545,6 +546,7 @@ async def _run_agent(
     except Exception as exc:  # noqa: BLE001 - a worker must never die silently
         await _fail(state_backend, session_id, "INTERNAL_ERROR", str(exc), perf=_session_perf(session_id))
     finally:
+        tracer.unregister_budget_guard(session_id, budget_guard)
         _ACTIVE_SESSIONS.discard(session_id)
         if manager is not None:
             try:

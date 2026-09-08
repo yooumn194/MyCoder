@@ -1,5 +1,6 @@
 import json
 
+from eval_bench._gen_dataset import build as build_dataset
 from eval_bench.matrix import VARIANTS, aggregate, build_plan
 
 
@@ -34,3 +35,11 @@ def test_ablation_aggregate_reports_repeat_variance_and_failures(tmp_path):
     assert result["pass_rate"] == {"mean": 0.75, "stddev": 0.25, "n": 2}
     assert result["duration_s"]["mean"] == 2.0
     assert result["failure_distribution"] == {"TIMEOUT": 1}
+
+
+def test_dataset_uses_difficulty_aware_session_budgets():
+    expected = {"easy": 96_000, "medium": 128_000, "hard": 160_000}
+    problems = build_dataset()
+
+    assert len(problems) == 30
+    assert all(problem["max_tokens"] == expected[problem["difficulty"]] for problem in problems)
