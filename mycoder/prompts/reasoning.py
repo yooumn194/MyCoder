@@ -26,20 +26,26 @@ _SECTIONS: dict[str, str] = {
         "Before every action, output a single line starting with `Thought:` that "
         "states why you are taking this step. After a tool result, output a short "
         "`Observation:` line. Continue the Thought -> Action -> Observation loop "
-        "until the task is complete."
+        "until the task is complete. Never repeat an identical tool call with "
+        "identical arguments. Once the requested edit is made and verification "
+        "passes, stop calling tools and return the result."
     ),
     "plan_execute": (
         "\n## Reasoning mode: Plan-and-Execute\n"
         "Before acting, output a concise `Plan:` (numbered steps with "
         "dependencies). Execute one step at a time; after each step, compare the "
         "result against the plan and adjust or re-plan if it diverges. Do not "
-        "blindly follow the original plan when new information contradicts it."
+        "blindly follow the original plan when new information contradicts it. "
+        "Never repeat an identical tool call; when all required steps and "
+        "verification are complete, return the result immediately."
     ),
     "reflection": (
         "\n## Reasoning mode: Reflection\n"
         "After each action's result, output a short `Reflection:` line evaluating "
         "whether the outcome is as expected. If it is not, correct course before "
-        "the next action — do not repeat the same failed approach."
+        "the next action — do not repeat the same failed approach. Retry a failed "
+        "approach at most once without new evidence, and return immediately after "
+        "the edit is verified."
     ),
 }
 

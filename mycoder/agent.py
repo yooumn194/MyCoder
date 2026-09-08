@@ -5,8 +5,9 @@ This is the heart of MyCoder.  The pattern is simple:
     user message -> LLM (with tools) -> tool calls? -> execute -> loop
                                       -> text reply? -> return to user
 
-It keeps looping until the LLM responds with plain text (no tool calls),
-which means it's done working and ready to report back.
+It normally stops when the LLM responds with plain text (no tool calls).
+Runtime convergence limits also stop repeated, stagnant, overlong, or
+budget-exhausting loops and reserve one tool-free final response when possible.
 """
 
 from __future__ import annotations
@@ -15,6 +16,14 @@ import concurrent.futures
 import inspect
 import os
 import time
+
+from .convergence import (
+    ConvergenceController,
+    ConvergenceLimits,
+    ToolAdmission,
+    ToolObservation,
+)
+from .context import ContextManager, estimate_tokens
 from .llm import LLM
 from .memory.integration import MemoryIntegration
 from .planner import planning_guard
@@ -30,8 +39,10 @@ from .prompts.reasoning import (
     resolve_strategy,
     resolve_strategy_by_task,
 )
-from .context import ContextManager
+from .sandbox.logger import get_logger
 from .tools.security import redact_output
+
+logger = get_logger("mycoder.agent")
 
 
 def _injection_guard_enabled() -> bool:
@@ -53,6 +64,7 @@ class Agent:
         memory_compressor=None,
         experience_store=None,
         budget_guard=None,
+        convergence_limits: ConvergenceLimits | None = None,
     ):
         self.llm = llm
         self.tools = tools if tools is not None else ALL_TOOLS
@@ -65,6 +77,10 @@ class Agent:
         if memory_compressor is not None:
             self.context.on_compressed = memory_compressor.on_compressed
         self.max_rounds = max_rounds
+        self.budget_guard = budget_guard
+        self.convergence_limits = convergence_limits or ConvergenceLimits.from_env(
+            max_rounds
+        )
         # P1 (prompts/reasoning.py): reasoning strategy — ReAct / Plan-and-
         # Execute / Reflection. A manual override (explicit arg or the
         # PLANNING_STRATEGY env) fixes one strategy for the session; otherwise
@@ -103,6 +119,7 @@ class Agent:
         self._tool_failure = 0
         self._tool_retries = 0
         self._tool_durations: list[float] = []  # ms per real execution
+        self._last_convergence: dict = {}
 
         # wire up sub-agent capability
         for t in self.tools:
@@ -161,20 +178,33 @@ class Agent:
         self.messages.append({"role": "user", "content": user_input})
         self.context.maybe_compress(self.messages, self.llm)
 
-        for _ in range(self.max_rounds):
+        convergence = ConvergenceController(self.convergence_limits)
+        for _ in range(self.max_rounds + 1):
+            stop_reason = convergence.before_round(self._budget_ratio())
+            if stop_reason:
+                return self._finalize_after_convergence(
+                    stop_reason, on_token=on_token, controller=convergence
+                )
             # Predictive execution: the LLM streams tool calls; a call whose
             # arguments complete early is handed to a pool and runs WHILE the
             # stream keeps generating, so its result is ready when generation
             # finishes — one serial RTT saved per round (StreamingToolExecutor).
             predicted: dict[str, concurrent.futures.Future] = {}
+            admissions: dict[str, ToolAdmission] = {}
             pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
             try:
 
                 def _predict(tc):
+                    admission = convergence.admit_tool(tc.name, tc.arguments)
+                    admissions[tc.id] = admission
                     tool = self._tool_by_name.get(tc.name)
                     # Speculation is deny-by-default. Idempotent writes are not
                     # enough: they may still expose partial model arguments.
-                    if tool is not None and getattr(tool, "predictive_safe", False):
+                    if (
+                        admission.allowed
+                        and tool is not None
+                        and getattr(tool, "predictive_safe", False)
+                    ):
                         predicted[tc.id] = pool.submit(self._exec_tool, tc)
 
                 resp = self.llm.chat(
@@ -188,6 +218,7 @@ class Agent:
 
             # no tool calls -> LLM is done, return text
             if not resp.tool_calls:
+                self._last_convergence = convergence.snapshot("model_completed")
                 self.messages.append(resp.message)
                 # Post-LLM: redact secret shapes before the reply reaches the user.
                 return redact_output(resp.content)
@@ -202,12 +233,23 @@ class Agent:
                 for tc in resp.tool_calls:
                     if on_tool:
                         on_tool(tc.name, tc.arguments)
-                    fut = predicted.get(tc.id)
-                    results.append(
-                        fut.result() if fut is not None else self._exec_tool(tc)
-                    )
+                    admission = admissions.get(tc.id)
+                    if admission is None:
+                        admission = convergence.admit_tool(tc.name, tc.arguments)
+                        admissions[tc.id] = admission
+                    if not admission.allowed:
+                        results.append(admission.blocked_reason or "CONVERGENCE_BLOCKED")
+                    else:
+                        fut = predicted.get(tc.id)
+                        results.append(
+                            fut.result() if fut is not None else self._exec_tool(tc)
+                        )
+                observations: list[ToolObservation] = []
                 for tc, result in zip(resp.tool_calls, results):
                     result = self._guard_tool_result(tc.name, result)
+                    observations.append(
+                        ToolObservation(admissions[tc.id], tc.name, result)
+                    )
                     self.messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
@@ -222,7 +264,105 @@ class Agent:
             # compress if tool outputs are big
             self.context.maybe_compress(self.messages, self.llm)
 
-        return "(reached maximum tool-call rounds)"
+            stop_reason = convergence.finish_round(observations)
+            if stop_reason:
+                return self._finalize_after_convergence(
+                    stop_reason, on_token=on_token, controller=convergence
+                )
+
+        return self._finalize_after_convergence(
+            f"round limit reached ({self.max_rounds})",
+            on_token=on_token,
+            controller=convergence,
+        )
+
+    @staticmethod
+    def _session_id() -> str | None:
+        try:
+            from structlog.contextvars import get_contextvars
+
+            value = get_contextvars().get("session_id")
+            return str(value) if value else None
+        except Exception:  # noqa: BLE001 - context is optional for local callers
+            return None
+
+    def _budget_ratio(self) -> float | None:
+        if self.budget_guard is None:
+            return None
+        session_id = self._session_id()
+        if not session_id:
+            return None
+        maximum = max(1, int(self.budget_guard.max_tokens_per_session))
+        remaining = self.budget_guard.get_remaining(session_id)
+        ratio = 1.0 - (remaining / maximum)
+        # Do not wait for the percentage threshold when one more ordinary
+        # round could consume the tokens needed by the tool-free final answer.
+        # Two projected calls means: one possible action round + one summary.
+        if remaining <= 2 * self._finalization_reserve():
+            return max(ratio, self.convergence_limits.soft_budget_ratio)
+        return ratio
+
+    def _finalization_reserve(self) -> int:
+        prompt_tokens = estimate_tokens(self._full_messages())
+        try:
+            configured_output = int(getattr(self.llm, "max_tokens", 4096) or 4096)
+        except (TypeError, ValueError):
+            configured_output = 4096
+        output_cap = min(
+            4096,
+            max(256, configured_output),
+        )
+        return prompt_tokens + output_cap + 512
+
+    def _can_afford_finalization(self) -> bool:
+        """Reserve enough budget for one tool-free final response."""
+        if self.budget_guard is None:
+            return True
+        session_id = self._session_id()
+        if not session_id:
+            return True
+        remaining = self.budget_guard.get_remaining(session_id)
+        return remaining > self._finalization_reserve()
+
+    def _finalize_after_convergence(
+        self,
+        reason: str,
+        on_token=None,
+        controller: ConvergenceController | None = None,
+    ) -> str:
+        """Ask once for a tool-free summary if the hard budget can afford it."""
+        if controller is not None:
+            self._last_convergence = controller.snapshot(reason)
+        logger.info("agent_convergence_stop", reason=reason, **self._last_convergence)
+        if not self._can_afford_finalization():
+            return (
+                f"(stopped by convergence control: {reason}; "
+                "final-call budget reserved)"
+            )
+        notice = (
+            "[Convergence control] Stop taking actions now. "
+            f"Reason: {reason}. Summarize completed work, verification, and any "
+            "remaining limitation concisely. Do not request or call tools."
+        )
+        final_messages = self._full_messages()
+        # Keep the provider-compatible invariant that the system message is
+        # first instead of inserting a second system role midway through the
+        # tool conversation.
+        final_messages[0] = {
+            "role": "system",
+            "content": f"{self._system}\n\n{notice}",
+        }
+        response = self.llm.chat(
+            messages=final_messages,
+            tools=[],
+            on_token=on_token,
+        )
+        if response.tool_calls:
+            self.messages.append(response.message)
+            self._answer_pending_tool_calls(response.tool_calls)
+            return f"(stopped by convergence control: {reason})"
+        self.messages.append(response.message)
+        return redact_output(response.content)
 
     def _guard_tool_result(self, name: str, result: str) -> str:
         """Fast-scan a tool result for injection; a hit replaces it with a
@@ -408,6 +548,7 @@ class Agent:
             "retry_rate": round(self._tool_retries / total, 4) if total else 0.0,
             "avg_duration_ms": round(avg_d, 2),
             "p95_duration_ms": round(p95_d, 2),
+            "convergence": dict(self._last_convergence),
         }
 
     def reset(self):
