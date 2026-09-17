@@ -11,19 +11,38 @@ import hashlib
 import json
 import os
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 
 _MUTATING_TOOLS = {
     "edit_file",
     "write_file",
-    "sync_workspace",
     "todo_write",
     "todo_update",
     "memory_save",
     "memory_forget",
     "memory_confirm",
     "memory_correct",
+}
+
+
+class ConvergencePhase(str, Enum):
+    """Monotonic phases for one agent turn."""
+
+    EXPLORE = "explore"
+    MUTATE = "mutate"
+    VERIFY = "verify"
+    FINALIZE = "finalize"
+    STOP = "stop"
+
+
+_PHASE_ORDER = {
+    ConvergencePhase.EXPLORE: 0,
+    ConvergencePhase.MUTATE: 1,
+    ConvergencePhase.VERIFY: 2,
+    ConvergencePhase.FINALIZE: 3,
+    ConvergencePhase.STOP: 4,
 }
 
 
@@ -91,11 +110,33 @@ class ConvergenceController:
 
     def __init__(self, limits: ConvergenceLimits) -> None:
         self.limits = limits
+        self.phase = ConvergencePhase.EXPLORE
+        self.phase_transitions: list[dict[str, str]] = []
         self.rounds = 0
         self.tool_calls = 0
         self.stagnant_rounds = 0
         self._action_counts: dict[str, int] = {}
         self._result_digests: set[str] = set()
+
+    def transition(self, phase: ConvergencePhase | str, *, reason: str = "") -> bool:
+        """Advance the runtime phase without allowing a regression."""
+        try:
+            target = phase if isinstance(phase, ConvergencePhase) else ConvergencePhase(str(phase))
+        except ValueError:
+            return False
+        current = self.phase
+        if _PHASE_ORDER[target] < _PHASE_ORDER[current]:
+            self.phase_transitions.append(
+                {"from": current.value, "to": target.value, "reason": "regression_ignored"}
+            )
+            return False
+        if target is current:
+            return True
+        self.phase = target
+        self.phase_transitions.append(
+            {"from": current.value, "to": target.value, "reason": str(reason or "")[:160]}
+        )
+        return True
 
     @staticmethod
     def _signature(name: str, arguments: dict[str, Any]) -> str:
@@ -124,15 +165,20 @@ class ConvergenceController:
                 "⚠ Blocked",
                 "⚠ Cancelled",
                 "CONVERGENCE_BLOCKED",
+                "ACTION_REQUIRED",
                 "[interrupted]",
             )
         )
 
     def before_round(self, budget_ratio: float | None = None) -> str | None:
         if self.rounds >= self.limits.max_rounds:
-            return f"round limit reached ({self.limits.max_rounds})"
+            reason = f"round limit reached ({self.limits.max_rounds})"
+            self.transition(ConvergencePhase.STOP, reason=reason)
+            return reason
         if budget_ratio is not None and budget_ratio >= self.limits.soft_budget_ratio:
-            return f"soft token budget reached ({budget_ratio:.0%})"
+            reason = f"soft token budget reached ({budget_ratio:.0%})"
+            self.transition(ConvergencePhase.STOP, reason=reason)
+            return reason
         self.rounds += 1
         return None
 
@@ -182,12 +228,16 @@ class ConvergenceController:
 
         self.stagnant_rounds = 0 if progressed else self.stagnant_rounds + 1
         if self.stagnant_rounds >= self.limits.max_stagnant_rounds:
-            return (
+            reason = (
                 "no new evidence or successful state change for "
                 f"{self.stagnant_rounds} consecutive rounds"
             )
+            self.transition(ConvergencePhase.STOP, reason=reason)
+            return reason
         if self.tool_calls >= self.limits.max_tool_calls:
-            return f"tool-call limit reached ({self.limits.max_tool_calls})"
+            reason = f"tool-call limit reached ({self.limits.max_tool_calls})"
+            self.transition(ConvergencePhase.STOP, reason=reason)
+            return reason
         return None
 
     def snapshot(self, stop_reason: str | None = None) -> dict[str, Any]:
@@ -196,4 +246,11 @@ class ConvergenceController:
             "tool_calls": self.tool_calls,
             "stagnant_rounds": self.stagnant_rounds,
             "stop_reason": stop_reason,
+        }
+
+    def phase_snapshot(self) -> dict[str, Any]:
+        """Return phase diagnostics separately from the legacy counters."""
+        return {
+            "phase": self.phase.value,
+            "phase_transitions": list(self.phase_transitions),
         }

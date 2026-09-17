@@ -41,13 +41,13 @@ providers:
       fast: [base]
   deepseek:
     tiers:
-      fast: "deepseek-chat"
-      standard: "deepseek-chat"
-      powerful: "deepseek-reasoner"
+      fast: "deepseek-flash"
+      standard: "deepseek-flash"
+      powerful: "deepseek-flash"
     fallbacks:
-      powerful: [standard, base]
-      standard: [base]
-      fast: [base]
+      powerful: [standard, fast]
+      standard: [fast]
+      fast: []
   openrouter:
     tiers:
       fast: "openrouter/free"
@@ -149,19 +149,11 @@ class ModelRouter:
         """
         self._hot_reload()
         provider_config = self._provider_config(provider)
-        tiers = (
-            provider_config.get("tiers", {})
-            if provider_config is not None
-            else self.config.get("tiers", {})
-        )
+        tiers = provider_config.get("tiers", {}) if provider_config is not None else self.config.get("tiers", {})
         primary = tiers.get(tier)
         if not primary:
             return []
-        refs = (
-            provider_config.get("fallbacks", {}).get(tier, [])
-            if provider_config is not None
-            else []
-        )
+        refs = provider_config.get("fallbacks", {}).get(tier, []) if provider_config is not None else []
         models: list[str] = [primary]
         for ref in refs:
             if ref == "base":
@@ -201,6 +193,15 @@ def build_model_factory(base_llm, router: ModelRouter | None = None):
     router = router or ModelRouter()
     if base_llm is None:
         return lambda _tier: None
+    if os.getenv("MYCODER_LOCK_BASE_MODEL", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        # Reproducible single-model calibration: every sub-agent inherits the
+        # configured base model instead of silently changing model by role.
+        return lambda _tier: base_llm
 
     def _api_key() -> str | None:
         key = getattr(base_llm, "api_key", None)
@@ -223,6 +224,8 @@ def build_model_factory(base_llm, router: ModelRouter | None = None):
         kwargs = dict(getattr(base_llm, "extra", {}))
         if hasattr(base_llm, "provider"):
             kwargs["provider"] = provider
+        if hasattr(base_llm, "tool_dialect"):
+            kwargs["tool_dialect"] = getattr(base_llm, "tool_dialect")
         return base_llm.__class__(
             model=model,
             api_key=_api_key(),

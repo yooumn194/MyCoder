@@ -13,10 +13,11 @@ snippet like `if x {`) cannot break the template or inject placeholders.
 # The subagent catalog the planner may choose from (must match
 # agents/definition.py BUILTIN_SUBAGENTS).
 _SUBAGENT_CATALOG = """\
-可用 subagent 类型（只能从以下四种里选）：
+可用 subagent 类型（只能从以下五种里选）：
 - explorer:      只读代码搜索与定位（grep/list_files/read_file），返回发现结果，不改代码
 - planner:       设计实现计划（可用 todo_write），不写代码，只输出方案
 - implementer:   执行代码修改并运行测试验证（write_file/execute_in_sandbox）
+- verifier:      在隔离沙箱中运行聚焦测试或静态检查，不修改宿主工作区
 - reviewer:      只读代码审查，检查正确性、质量与安全问题，不改代码"""
 
 # Only {subagent_catalog} and {max_subtasks} are real placeholders. The
@@ -54,17 +55,10 @@ _EXAMPLES = """\
 
 def build_system_prompt(max_subtasks: int) -> str:
     """Render the system prompt with the configured subtask cap."""
-    return _SYSTEM_HEADER.format(
-        subagent_catalog=_SUBAGENT_CATALOG, max_subtasks=max_subtasks
-    ) + _EXAMPLES
+    return _SYSTEM_HEADER.format(subagent_catalog=_SUBAGENT_CATALOG, max_subtasks=max_subtasks) + _EXAMPLES
 
 
 def build_user_prompt(task: str, context: dict | None) -> str:
     """Render the user turn by concatenation (never .format) so braces inside
     the user's task cannot break the template or inject placeholders."""
-    return (
-        "任务：\n"
-        + str(task)
-        + "\n\n附加上下文（可为空）：\n"
-        + str(context or {})
-    )
+    return "任务：\n" + str(task) + "\n\n附加上下文（可为空）：\n" + str(context or {})

@@ -6,23 +6,31 @@ from pathlib import Path
 
 
 _PROVIDER_DEFAULTS = {
-    "openai": {"model": "gpt-5.5", "base_url": None, "key_env": "OPENAI_API_KEY"},
+    "openai": {
+        "model": "gpt-5.5",
+        "base_url": None,
+        "key_env": "OPENAI_API_KEY",
+        "tool_dialect": "native",
+    },
     "deepseek": {
-        "model": "deepseek-chat",
+        "model": "deepseek-flash",
         "base_url": "https://api.deepseek.com",
         "key_env": "DEEPSEEK_API_KEY",
+        "tool_dialect": "zcode",
     },
     "openrouter": {
         "model": "minimax/minimax-m3:free",
         "base_url": "https://openrouter.ai/api/v1",
         "key_env": "OPENROUTER_API_KEY",
+        "tool_dialect": "auto",
     },
     "ollama": {
         "model": "qwen2.5-coder:7b",
         "base_url": "http://localhost:11434/v1",
         "key_env": None,
+        "tool_dialect": "native",
     },
-    "litellm": {"model": "gpt-5.5", "base_url": None, "key_env": None},
+    "litellm": {"model": "gpt-5.5", "base_url": None, "key_env": None, "tool_dialect": "native"},
 }
 PROVIDERS = tuple(_PROVIDER_DEFAULTS)
 
@@ -78,6 +86,10 @@ class Config:
     temperature: float = 0.0
     max_context_tokens: int = 128_000
     provider: str = "openai"
+    # Provider-specific reasoning mode. ``auto`` leaves the provider default
+    # untouched; DeepSeek accepts explicit ``enabled``/``disabled`` values.
+    thinking: str = "auto"
+    tool_dialect: str = "auto"
 
     @classmethod
     def from_env(
@@ -126,6 +138,16 @@ class Config:
                 or os.getenv("OPENAI_BASE_URL")
                 or defaults.get("base_url")
             )
+        thinking = os.getenv("MYCODER_DEEPSEEK_THINKING", "auto").strip().lower()
+        if thinking not in {"auto", "enabled", "disabled"}:
+            raise ValueError("MYCODER_DEEPSEEK_THINKING must be auto, enabled, or disabled")
+        tool_dialect = (
+            os.getenv(f"{env_prefix}_TOOL_DIALECT")
+            or (os.getenv("MYCODER_TOOL_DIALECT") if not profile else None)
+            or defaults.get("tool_dialect", "auto")
+        ).strip().lower()
+        if tool_dialect not in {"auto", "native", "zcode"}:
+            raise ValueError("tool dialect must be auto, native, or zcode")
         return cls(
             model=configured_model,
             api_key=api_key or "",
@@ -134,4 +156,6 @@ class Config:
             temperature=float(os.getenv("MYCODER_TEMPERATURE", "0")),
             max_context_tokens=int(os.getenv("MYCODER_MAX_CONTEXT", "128000")),
             provider=provider,
+            thinking=thinking if provider == "deepseek" else "auto",
+            tool_dialect=tool_dialect,
         )

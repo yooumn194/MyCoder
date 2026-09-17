@@ -71,6 +71,7 @@ _MEM_COLS = (
     "access_count", "last_accessed", "created_at", "updated_at",
     "deprecated_by", "metadata",
 )
+_UNSET = object()
 
 
 def _json_dumps(metadata: dict) -> str:
@@ -358,7 +359,7 @@ class MemoryStore:
         source: str | None = None,
         confidence: float | None = None,
         metadata: dict | None = None,
-        deprecated_by: str | None = None,
+        deprecated_by: str | None | object = _UNSET,
     ) -> str | None:
         entry = self.get(mem_id, touch=False)
         if entry is None:
@@ -373,7 +374,10 @@ class MemoryStore:
             entry.confidence = confidence
         if metadata is not None:
             entry.metadata = metadata
-        if deprecated_by is not None:
+        # ``None`` is meaningful here: callers such as correct_memory() use
+        # it to clear a previous deprecation.  A sentinel preserves the old
+        # "argument omitted" behavior for ordinary content updates.
+        if deprecated_by is not _UNSET:
             entry.deprecated_by = deprecated_by
         entry.updated_at = time.time()
         db = self._db_for(entry.scope)

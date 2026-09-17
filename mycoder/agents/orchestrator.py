@@ -7,6 +7,7 @@ on a subagent -> it is skipped), and always returns v1.0.1 envelopes.
 
 import asyncio
 import datetime
+import os
 import time
 import uuid
 from dataclasses import dataclass
@@ -34,10 +35,10 @@ CIRCUIT_BREAKER_COOLDOWN = 30.0
 
 
 class OrchestrationStrategy(Enum):
-    SEQUENTIAL = "sequential"    # A -> B -> C
-    PARALLEL = "parallel"        # A + B + C simultaneously
+    SEQUENTIAL = "sequential"  # A -> B -> C
+    PARALLEL = "parallel"  # A + B + C simultaneously
     CONDITIONAL = "conditional"  # if A success then B else C
-    AUTO = "auto"                # auto-select
+    AUTO = "auto"  # auto-select
 
 
 @dataclass
@@ -65,6 +66,7 @@ class Orchestrator:
         max_replan_rounds: int = 3,
         checkpoint_store=None,
         reasoning_strategy: str | None = None,
+        tool_tracer=None,
     ) -> None:
         self.blackboard = blackboard
         self.plan_store = plan_store
@@ -89,8 +91,10 @@ class Orchestrator:
         # reuses the same plan and skips already-succeeded steps.
         self._checkpoint_store = checkpoint_store
         self.reasoning_strategy = reasoning_strategy
+        self.tool_tracer = tool_tracer
         self._session_id = "unknown"
         self._checkpoint_done: dict[str, SubagentResultEnvelope] = {}
+        self._tool_evidence_by_assignment: dict[str, list[dict]] = {}
         # Token-budget enforcement (optional; None = no-op, backward compatible).
         self._budget_guard = budget_guard
         self._budget_blown = False
@@ -169,9 +173,7 @@ class Orchestrator:
         """
         start_time = time.monotonic()
         parent_context = parent_context or {"task_id": str(uuid.uuid4())}
-        session_id = (
-            parent_context.get("session_id") or parent_context.get("task_id", "unknown")
-        )
+        session_id = parent_context.get("session_id") or parent_context.get("task_id", "unknown")
         self._session_id = session_id
 
         self._checkpoint_done: dict[str, SubagentResultEnvelope] = {}
@@ -198,9 +200,7 @@ class Orchestrator:
 
     # ------------------------------------------------------------- internals
 
-    async def _decompose(
-        self, task: str, parent_context: dict, subtasks: Optional[list[dict]] = None
-    ) -> list[dict]:
+    async def _decompose(self, task: str, parent_context: dict, subtasks: Optional[list[dict]] = None) -> list[dict]:
         """Turn the task into subagent assignments.
 
         Explicit subtasks are passed through untouched (backward compatible).
@@ -209,22 +209,172 @@ class Orchestrator:
         (key `{task_id}:plan`) so subagents can read the whole plan. Without a
         planner, the original single-explorer default is kept.
         """
+        assignments: list[dict]
         if subtasks:
-            return subtasks
-        if self._planner is not None:
+            assignments = list(subtasks)
+        elif parent_context.get("require_patch"):
+            # SWE-bench and other patch jobs already have a deterministic
+            # implement -> verify pipeline. A meta-planner call before every
+            # single issue adds latency/cost and can consume the edit budget
+            # without improving the plan (Codex/OpenCode enter the tool loop
+            # directly for this class of task).
+            assignments = [{"subagent_name": "implementer", "task": task}]
+        elif self._planner is not None:
             try:
                 plan = await self._planner.decompose(task, parent_context)
                 assignments = [self._subtask_to_assignment(st) for st in plan]
-                task_id = (parent_context or {}).get("task_id")
-                if task_id and self.blackboard is not None:
-                    try:
-                        await self.blackboard.put(task_id, "plan", assignments)
-                    except Exception:  # noqa: BLE001 - plan publish is best-effort
-                        pass
-                return assignments
             except Exception:  # noqa: BLE001 - planner never raises, but be safe
-                return [{"subagent_name": "explorer", "task": task}]
-        return [{"subagent_name": "explorer", "task": task}]
+                assignments = [{"subagent_name": "implementer", "task": task}]
+        else:
+            assignments = [{"subagent_name": "implementer", "task": task}]
+
+        assignments = self._normalize_assignments(assignments)
+        if parent_context.get("require_patch"):
+            assignments = self._ensure_patch_pipeline(
+                assignments,
+                task,
+                harness_verification=parent_context.get("verification_owned_by") == "harness",
+            )
+        task_id = (parent_context or {}).get("task_id")
+        if task_id and self.blackboard is not None:
+            try:
+                await self.blackboard.put(task_id, "plan", assignments)
+            except Exception:  # noqa: BLE001 - plan publish is best-effort
+                pass
+        return assignments
+
+    @staticmethod
+    def _ensure_patch_pipeline(
+        assignments: list[dict],
+        task: str,
+        *,
+        harness_verification: bool = False,
+    ) -> list[dict]:
+        """For benchmark/code-patch runs, always end in edit then verification.
+
+        Planner output remains useful as discovery context, but an analysis-only
+        plan can no longer be reported as a successful benchmark attempt.
+
+        ``harness_verification`` skips the LLM verifier: when the harness owns a
+        verification command, that command's exit code decides the run, and the
+        verifier subagent would answer the same question a second time — for
+        real tokens, and with the power to fail a run whose tests pass. The
+        implementer then keeps the budget that was reserved for the verifier.
+        """
+        result = [dict(item) for item in assignments]
+        if harness_verification:
+            # The harness owns the verdict.  Remove *all* verifier roles,
+            # including one emitted by a planner, rather than only suppressing
+            # the automatic fallback below.  Otherwise a planned verifier can
+            # still spend tokens or fail a run whose harness command passes.
+            verifier_ids = {
+                str(item.get("id"))
+                for item in result
+                if item.get("subagent_name") == "verifier"
+            }
+            if verifier_ids:
+                verifier_dependencies = {
+                    str(item.get("id")): list(item.get("depends_on", []))
+                    for item in result
+                    if item.get("subagent_name") == "verifier"
+                }
+                result = [
+                    item for item in result if item.get("subagent_name") != "verifier"
+                ]
+                for item in result:
+                    dependencies: list[str] = []
+                    for dep in item.get("depends_on", []):
+                        if dep in verifier_ids:
+                            dependencies.extend(verifier_dependencies.get(dep, []))
+                        else:
+                            dependencies.append(dep)
+                    item["depends_on"] = list(dict.fromkeys(dependencies))
+        used_ids = {item["id"] for item in result}
+
+        # Keep only the verifier's configured minimum out of the implementer's
+        # spendable budget.  The previous hard-coded 10k reserve combined with
+        # the Agent's prompt/mutation reserves and could leave no affordable
+        # action round after a few legitimate inspections (especially for a
+        # 12k–20k calibration run).  An explicit assignment reserve still wins
+        # so callers can request a larger downstream allocation.
+        try:
+            verifier_reserve = max(
+                0, int(os.getenv("MYCODER_VERIFICATION_RESERVED_TOKENS", "4096"))
+            )
+        except ValueError:
+            verifier_reserve = 4096
+
+        def unique_id(base: str) -> str:
+            if base not in used_ids:
+                used_ids.add(base)
+                return base
+            index = 2
+            while f"{base}-{index}" in used_ids:
+                index += 1
+            value = f"{base}-{index}"
+            used_ids.add(value)
+            return value
+
+        implementer_items = [item for item in result if item["subagent_name"] == "implementer"]
+        for implementer in implementer_items:
+            assigned_task = str(implementer.get("task") or "").strip()
+            if assigned_task != task.strip():
+                implementer["task"] = f"Original task:\n{task}\n\nAssigned implementation step:\n{assigned_task or task}"
+            implementer["estimated_tokens"] = max(20_000, int(implementer.get("estimated_tokens") or 0))
+            # Keep a real verifier runnable even when implementation expands
+            # to its soft limit. The shared hard cap remains authoritative.
+            # With harness verification there is no verifier to make room for,
+            # so the implementer keeps that budget (an explicit caller reserve
+            # still wins in both cases).
+            implementer["reserved_tokens"] = (
+                int(implementer.get("reserved_tokens") or 0)
+                if harness_verification
+                else max(verifier_reserve, int(implementer.get("reserved_tokens") or 0))
+            )
+        implementers = [item["id"] for item in implementer_items]
+        if not implementers:
+            implementation_id = unique_id("implement")
+            result.append(
+                {
+                    "id": implementation_id,
+                    "subagent_name": "implementer",
+                    "task": task,
+                    "depends_on": [item["id"] for item in result],
+                    "estimated_tokens": 20_000,
+                    "reserved_tokens": verifier_reserve,
+                }
+            )
+            implementers = [implementation_id]
+        verifiers = [item for item in result if item["subagent_name"] == "verifier"]
+        if verifiers:
+            for verifier in verifiers:
+                verifier["depends_on"] = list(dict.fromkeys([*verifier.get("depends_on", []), *implementers]))
+                verifier["task"] = (
+                    f"Verify the implementation against this original task:\n{task}\n\n"
+                    f"Verification instructions:\n{str(verifier.get('task') or '').strip()}"
+                )
+                verifier["estimated_tokens"] = max(10_000, int(verifier.get("estimated_tokens") or 0))
+        elif harness_verification:
+            # The harness runs the check. An explicitly planned verifier would
+            # have been handled by the branch above; only the auto-appended one
+            # is dropped.
+            logger.info("orchestrate.verifier_skipped", reason="harness_verification")
+        else:
+            result.append(
+                {
+                    "id": unique_id("verify"),
+                    "subagent_name": "verifier",
+                    "task": (
+                        "Verify the implementation against this original task:\n"
+                        f"{task}\n\nInspect the diff, "
+                        "run focused tests in the existing sandbox, and use static checks if "
+                        "the full test environment is unavailable. Do not edit production files."
+                    ),
+                    "depends_on": implementers,
+                    "estimated_tokens": 10_000,
+                }
+            )
+        return result
 
     @staticmethod
     def _subtask_to_assignment(st) -> dict:
@@ -251,6 +401,7 @@ class Orchestrator:
         # ids for repeated roles so no result can overwrite another.
         self._completed_by_id: dict[str, SubagentResultEnvelope] = {}
         self._result_keys: dict[str, str] = {}
+        self._tool_evidence_by_assignment: dict[str, list[dict]] = {}
 
         if strategy == OrchestrationStrategy.AUTO:
             strategy = self._select_auto_strategy(layers)
@@ -285,9 +436,9 @@ class Orchestrator:
             if len(layer) < 2:
                 continue
             if all(
-                (definition := BUILTIN_SUBAGENTS.get(assign["subagent_name"]))
-                is not None
+                (definition := BUILTIN_SUBAGENTS.get(assign["subagent_name"])) is not None
                 and definition.read_only
+                and "execute_in_sandbox" not in definition.allowed_tools
                 and assign.get("executor") is None
                 for assign in layer
             ):
@@ -312,9 +463,7 @@ class Orchestrator:
         for assign in normalized:
             missing = set(assign["depends_on"]) - ids
             if missing:
-                raise ValueError(
-                    f"assignment {assign['id']} has unknown dependencies: {sorted(missing)}"
-                )
+                raise ValueError(f"assignment {assign['id']} has unknown dependencies: {sorted(missing)}")
         return normalized
 
     @staticmethod
@@ -324,11 +473,7 @@ class Orchestrator:
         emitted: set[str] = set()
         layers: list[list[dict]] = []
         while remaining:
-            ready = [
-                assign
-                for assign in remaining.values()
-                if set(assign["depends_on"]) <= emitted
-            ]
+            ready = [assign for assign in remaining.values() if set(assign["depends_on"]) <= emitted]
             if not ready:
                 raise ValueError("assignment dependency graph contains a cycle")
             layers.append(ready)
@@ -362,16 +507,13 @@ class Orchestrator:
         results[key] = envelope
         self._completed_by_id[aid] = envelope
 
-    def _dependency_failure(
-        self, assign: dict, parent_context: dict
-    ) -> SubagentResultEnvelope | None:
+    def _dependency_failure(self, assign: dict, parent_context: dict) -> SubagentResultEnvelope | None:
         if not hasattr(self, "_completed_by_id"):
             self._completed_by_id = {}
         blocked = [
             dep
             for dep in assign.get("depends_on", [])
-            if dep in self._completed_by_id
-            and self._completed_by_id[dep].status in ("failed", "cancelled")
+            if dep in self._completed_by_id and self._completed_by_id[dep].status in ("failed", "cancelled")
         ]
         if not blocked:
             return None
@@ -388,9 +530,7 @@ class Orchestrator:
 
     def _checkpoint_result(self, assign: dict, envelope: SubagentResultEnvelope) -> None:
         if self._checkpoint_store is not None and envelope.status in ("success", "partial"):
-            self._checkpoint_store.record_result(
-                self._session_id, assign["id"], envelope.model_dump()
-            )
+            self._checkpoint_store.record_result(self._session_id, assign["id"], envelope.model_dump())
 
     async def _execute_sequential(
         self, assignments: list[dict], parent_context: dict, results: dict
@@ -435,13 +575,21 @@ class Orchestrator:
             self._record_status(name, envelope)
             self._checkpoint_result(assign, envelope)
 
-            deviation = self._deviation.check(envelope)
+            # Pass the concrete node goal so an injected judge can distinguish
+            # a healthy-looking but off-target result (GOAL_DRIFT). Keep
+            # compatibility with older detector implementations that accepted
+            # only the envelope argument.
+            try:
+                deviation = self._deviation.check(
+                    envelope,
+                    goal=str(assign.get("task") or parent_context.get("task") or ""),
+                )
+            except TypeError:
+                deviation = self._deviation.check(envelope)
             if deviation is None or replan_left <= 0:
                 continue
             replan_left -= 1
-            action = await self._apply_recovery(
-                deviation, assign, queue, parent_context, results
-            )
+            action = await self._apply_recovery(deviation, assign, queue, parent_context, results)
             self._record_experience(deviation, action, name)
         return results
 
@@ -460,7 +608,33 @@ class Orchestrator:
             # permanent errors skip immediately; retryable ones get ONE retry
             if not deviation.detail.get("retryable"):
                 return "hard_fail_skip"
-            retry = await self._run_one(assign, parent_context)
+            retry_assign = dict(assign)
+            previous = self._completed_by_id.get(assign.get("id"))
+            previous_error = getattr(previous, "error", None)
+            code = getattr(previous_error, "code", None)
+            failure_detail = str(getattr(previous_error, "message", "") or "")[:1200]
+            if code == "PATCH_REQUIRED":
+                retry_assign["task"] = (
+                    "CORRECTION: The previous attempt produced no repository diff. "
+                    "Do not stop after analysis or file inspection. Make the smallest "
+                    "correct production-code edit, then inspect git diff and run a focused test.\n"
+                    f"Previous deterministic failure evidence: {failure_detail}\n\n" + assign["task"]
+                )
+            elif code == "PATCH_SCOPE_VIOLATION":
+                retry_assign["task"] = (
+                    "CORRECTION: The previous patch failed the deterministic scope "
+                    "safety check. Remove any unintended new file, do not add a "
+                    "duplicate module or replace a whole file with a partial snippet. "
+                    "Re-inspect the repository path and make only the smallest exact "
+                    "edit required by the issue.\n\n" + assign["task"]
+                )
+            elif code in {"SUBAGENT_TIMEOUT", "SUBAGENT_ERROR"}:
+                retry_assign["task"] = (
+                    "RECOVERY: The previous attempt failed transiently. Reuse the task "
+                    "context, avoid repeating broad exploration, and continue from the "
+                    "smallest concrete next action.\n\n" + assign["task"]
+                )
+            retry = await self._run_one(retry_assign, parent_context)
             if retry.status in ("success", "partial"):
                 self._put_result(results, assign, retry)
                 self._record_status(name, retry)
@@ -471,11 +645,7 @@ class Orchestrator:
             return "hard_fail_retry_failed"
         if deviation.type == DeviationType.SOFT_DRIFT:
             detail = deviation.detail
-            completeness = (
-                f", completeness={detail.get('completeness')}"
-                if detail.get("completeness") is not None
-                else ""
-            )
+            completeness = f", completeness={detail.get('completeness')}" if detail.get("completeness") is not None else ""
             queue.append(
                 {
                     "subagent_name": "implementer",
@@ -577,9 +747,7 @@ class Orchestrator:
         for assign in assignments:
             name = assign["subagent_name"]
             # if a previous assignment failed or the budget tripped, stop the chain
-            if self._budget_blown or any(
-                r.status in ("failed", "cancelled") for r in results.values()
-            ):
+            if self._budget_blown or any(r.status in ("failed", "cancelled") for r in results.values()):
                 break
             dependency_failure = self._dependency_failure(assign, parent_context)
             if dependency_failure is not None:
@@ -628,8 +796,21 @@ class Orchestrator:
             instance_id=str(uuid.uuid4()),
             executor=assign.get("executor"),
             budget_guard=self._budget_guard,
+            max_turn_tokens=min(
+                definition.max_tokens,
+                int(assign.get("estimated_tokens") or 0) or definition.max_tokens,
+            ),
+            reserved_tokens=int(assign.get("reserved_tokens") or 0),
+            prior_tool_events=self._tool_evidence_by_assignment.get(
+                str(assign.get("id") or assign["subagent_name"]),
+                [],
+            ),
         )
-        return await runner.run()
+        result = await runner.run()
+        self._tool_evidence_by_assignment[
+            str(assign.get("id") or assign["subagent_name"])
+        ] = runner.action_evidence
+        return result
 
     def _is_open(self, name: str) -> bool:
         """True when the subagent must be skipped (during the open cooldown).
@@ -708,12 +889,8 @@ class Orchestrator:
             duration_ms=0,
         )
 
-    def _synthesize(
-        self, results: dict, start_time: float, parent_context: dict
-    ) -> OrchestrationResult:
-        summaries = "\n".join(
-            f"[{name}] {env.status}: {env.summary}" for name, env in results.items()
-        )
+    def _synthesize(self, results: dict, start_time: float, parent_context: dict) -> OrchestrationResult:
+        summaries = "\n".join(f"[{name}] {env.status}: {env.summary}" for name, env in results.items())
         success = all(env.status in ("success", "partial") for env in results.values())
         tokens = sum(int((env.usage or {}).get("total_tokens", 0)) for env in results.values())
         return OrchestrationResult(

@@ -100,6 +100,26 @@ def _register_exit_cleanup() -> None:
     signal.signal(signal.SIGTERM, lambda _sig, _frm: sys.exit(0))
 
 
+def _announce_restore_point() -> None:
+    """Record and show where the working tree stands before the first command.
+
+    P0-1 made the container's /workspace the project directory itself (mounted
+    read-write), so a destructive command is not contained by a throwaway copy
+    any more. The restore point is what makes an approved mistake recoverable;
+    printing it also means the operator sees the recovery command before it is
+    needed. Best-effort: never block the REPL on it.
+    """
+    try:
+        from .sandbox import restore_hint
+        from .tools.sandbox_tool import capture_session_restore_point
+
+        hint = restore_hint(capture_session_restore_point())
+    except Exception:  # noqa: BLE001 - recovery must not break startup
+        return
+    if hint:
+        console.print(f"[dim]{hint}[/dim]")
+
+
 def main():
     _register_exit_cleanup()
     args = _parse_args()
@@ -183,6 +203,10 @@ def main():
 
     _memory_maintenance = _maintain_factory_memory
     agent = factory.build()
+
+    # P0-1: one filesystem means the agent's shell can reach this checkout, so
+    # a restore point is captured before the first command can run.
+    _announce_restore_point()
 
     # resume saved session
     if args.resume:

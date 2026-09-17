@@ -170,7 +170,7 @@ _active_plan: TaskPlan | None = None
 
 EXPLORATION_TOOLS = {"grep_search", "list_files", "read_file", "glob"}
 PLANNING_TOOLS = {"todo_write", "todo_update"}
-MUTATION_TOOLS = {"write_file", "edit_file", "execute_in_sandbox", "sync_workspace"}
+MUTATION_TOOLS = {"write_file", "edit_file", "execute_in_sandbox"}
 
 
 def get_plan_store() -> PlanStore:

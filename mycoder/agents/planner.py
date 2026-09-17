@@ -3,12 +3,13 @@
 Turns an arbitrary user instruction into a dependency DAG of subagent
 assignments. Design:
 
-  * One non-streaming LLM call (`response_format={"type": "json_object"}`) via
-    asyncio.to_thread, wrapped in a hard timeout (default 30s).
+  * One LLM call (`response_format={"type": "json_object"}`) with the timeout
+    enforced by the provider client, so a timed-out background thread cannot
+    keep streaming and charging after the planner has fallen back.
   * JSON parsing is tolerant: ```json fences are stripped, and the payload is
     coerced into a validated list[SubTask].
   * Every failure (bad JSON, invalid subagent name, dangling depends_on, DAG
-    cycle, timeout) retries once, then falls back to a single explorer task so
+  cycle, timeout) retries once, then falls back to a single implementer task so
     the Orchestrator always has a runnable plan.
 
 Observability: structlog records task_id / llm_duration_ms / subtask_count /
@@ -35,10 +36,8 @@ from .planner_prompt import build_system_prompt, build_user_prompt
 logger = get_logger("mycoder.planner")
 
 # Subagent roles the planner may emit — must match BUILTIN_SUBAGENTS keys.
-SubagentName = Literal["explorer", "planner", "implementer", "reviewer"]
-VALID_SUBAGENT_NAMES: frozenset[str] = frozenset(
-    ("explorer", "planner", "implementer", "reviewer")
-)
+SubagentName = Literal["explorer", "planner", "implementer", "verifier", "reviewer"]
+VALID_SUBAGENT_NAMES: frozenset[str] = frozenset(("explorer", "planner", "implementer", "verifier", "reviewer"))
 
 PLANNER_TIMEOUT_SECONDS = 30.0
 PLANNER_MAX_ATTEMPTS = 2  # initial attempt + one retry
@@ -81,7 +80,7 @@ class TaskPlanner:
     # ------------------------------------------------------------------ API
     async def decompose(self, task: str, context: dict | None = None) -> list[SubTask]:
         """Return a validated plan. Never raises: every failure path ends in a
-        single-explorer fallback so the orchestrator always has a plan."""
+        single-implementer fallback so the orchestrator can still make progress."""
         task_id = (context or {}).get("task_id", "unknown")
         if self._llm is None:
             logger.warning(
@@ -132,19 +131,29 @@ class TaskPlanner:
 
     # ------------------------------------------------------------- internals
     async def _call_llm(self, task: str, context: dict | None) -> str:
-        """One non-streaming LLM call with a hard timeout. Runs in a thread
-        because LLM.chat is a blocking stream; wait_for guards the deadline."""
+        """One blocking LLM call with a cancellation-safe provider timeout."""
         assert self._llm is not None
         messages = [
             {"role": "system", "content": build_system_prompt(self.max_subtasks)},
             {"role": "user", "content": build_user_prompt(task, context)},
         ]
-        response = await asyncio.wait_for(
-            asyncio.to_thread(
-                self._llm.chat, messages, response_format={"type": "json_object"}
-            ),
-            timeout=self.timeout,
-        )
+        kwargs: dict[str, Any] = {"response_format": {"type": "json_object"}}
+        if isinstance(self._llm, LLM):
+            # LLM/LiteLLM can enforce the timeout in their HTTP client. Also
+            # disable transport retries here: planner.decompose owns the one
+            # bounded semantic retry, avoiding retries at two nested layers.
+            kwargs.update(
+                timeout_seconds=self.timeout,
+                request_max_retries=1,
+            )
+            response = await asyncio.to_thread(self._llm.chat, messages, **kwargs)
+        else:
+            # Test/custom adapters may not expose provider request options.
+            # Retain the old waiter timeout for backward compatibility.
+            response = await asyncio.wait_for(
+                asyncio.to_thread(self._llm.chat, messages, **kwargs),
+                timeout=self.timeout,
+            )
         return str(getattr(response, "content", response))
 
     def _sanitize_subtasks(self, raw: str) -> list[SubTask]:
@@ -225,7 +234,7 @@ class TaskPlanner:
 
     @staticmethod
     def _default_subtask(task: str) -> SubTask:
-        return SubTask(id="t1", subagent_name="explorer", instruction=task)
+        return SubTask(id="t1", subagent_name="implementer", instruction=task)
 
 
 # ---------------------------------------------------------------------------

@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 def _approx_tokens(text: str) -> int:
     """Rough token count, roughly 3 chars per token for mixed en/zh content."""
-    return len(text) // 3
+    return max(1, len(text) // 3) if text else 0
 
 
 def estimate_tokens(messages: list[dict]) -> int:
@@ -71,8 +71,7 @@ class ContextManager:
 
         # Layer 3: hard collapse - last resort
         if current > self._collapse_at and len(messages) > 4:
-            self._hard_collapse(messages, llm)
-            compressed = True
+            compressed = self._hard_collapse(messages, llm) or compressed
 
         if compressed:
             self._compression_count += 1
@@ -97,6 +96,87 @@ class ContextManager:
             else 0.0,
         }
 
+    def compact_for_action(self, messages: list[dict], keep_recent: int = 6) -> bool:
+        """Deterministically compact exploration history before a forced edit.
+
+        This path deliberately avoids another LLM summarization call. It keeps
+        the original task, concise tool evidence, and dependency-safe recent
+        messages while removing repeated exploratory prose.
+
+        Thinking-mode providers (notably DeepSeek) require the *exact*
+        ``reasoning_content`` emitted by every previous assistant turn to be
+        replayed whenever tools are present.  Replacing such turns with a
+        synthetic summary would make the next request invalid (HTTP 400), so
+        leave the history intact and let the normal tool-output snipper reclaim
+        space instead.
+        """
+        if len(messages) <= keep_recent + 2:
+            return False
+        # Thinking-mode providers require the exact reasoning fields to be
+        # replayed. We may still reclaim oversized tool payloads without
+        # removing those assistant turns; short histories remain unchanged.
+        if any("reasoning_content" in message for message in messages):
+            before = estimate_tokens(messages)
+            changed = self._snip_tool_outputs(messages)
+            if not changed:
+                return False
+            after = estimate_tokens(messages)
+            if after >= before:
+                return False
+            self._compression_count += 1
+            self._tokens_before += before
+            self._tokens_after += after
+            return True
+        previous = list(messages)
+        before = estimate_tokens(messages)
+        split = self._safe_split(messages, keep_recent)
+        old = messages[:split]
+        tail = messages[split:]
+        original = next(
+            (
+                str(message.get("content", ""))[:4000]
+                for message in old
+                if message.get("role") == "user" and message.get("content")
+            ),
+            "",
+        )
+        evidence: list[str] = []
+        for message in old:
+            if message.get("role") == "assistant" and message.get("tool_calls"):
+                names = [
+                    str(call.get("name") or call.get("function", {}).get("name") or "")
+                    for call in message["tool_calls"]
+                    if isinstance(call, dict)
+                ]
+                if names:
+                    evidence.append("tools: " + ", ".join(name for name in names if name))
+            elif message.get("role") == "tool" and message.get("content"):
+                content = " ".join(str(message["content"]).split())
+                evidence.append(content[:400])
+        summary = "\n".join(evidence[-8:])[:3000] or "No durable tool evidence."
+        messages[:] = [
+            {
+                "role": "user",
+                "content": (
+                    "[Action context compacted]\nOriginal task:\n"
+                    f"{original}\n\nPrior tool evidence:\n{summary}"
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": "Context retained. Proceeding to the required repository mutation.",
+            },
+            *tail,
+        ]
+        after = estimate_tokens(messages)
+        if after >= before:
+            messages[:] = previous
+            return False
+        self._compression_count += 1
+        self._tokens_before += before
+        self._tokens_after += after
+        return True
+
     @staticmethod
     def _snip_tool_outputs(messages: list[dict]) -> bool:
         """Layer 1: Truncate tool results over 1500 chars to their first/last lines.
@@ -109,17 +189,23 @@ class ContextManager:
             if m.get("role") != "tool":
                 continue
             content = m.get("content", "")
+            if not isinstance(content, str):
+                content = str(content or "")
             if len(content) <= 1500:
                 continue
             lines = content.splitlines()
-            if len(lines) <= 6:
-                continue
-            # keep first 3 + last 3 lines
-            snipped = (
-                "\n".join(lines[:3])
-                + f"\n... ({len(lines)} lines, snipped to save context) ...\n"
-                + "\n".join(lines[-3:])
-            )
+            if len(lines) > 6:
+                # keep first 3 + last 3 lines
+                snipped = (
+                    "\n".join(lines[:3])
+                    + f"\n... ({len(lines)} lines, snipped to save context) ...\n"
+                    + "\n".join(lines[-3:])
+                )
+            else:
+                # Compiler traces and JSON blobs are often one long line.
+                # Keep both ends because the tail commonly contains the error.
+                head, tail = content[:900], content[-450:]
+                snipped = f"{head}\n... (output snipped to save context) ...\n{tail}"
             m["content"] = snipped
             changed = True
         return changed
@@ -147,6 +233,13 @@ class ContextManager:
         old = messages[:split]
         tail = messages[split:]
 
+        # Do not discard provider-private chain-of-thought. DeepSeek's
+        # thinking-mode tool protocol requires every historical
+        # ``reasoning_content`` value to be sent back verbatim on subsequent
+        # tool-bearing requests. A compacted prose summary is not equivalent.
+        if any("reasoning_content" in message for message in old):
+            return False
+
         summary = self._get_summary(old, llm)
         self._notify_compressed(old, summary)
 
@@ -162,11 +255,13 @@ class ContextManager:
         messages.extend(tail)
         return True
 
-    def _hard_collapse(self, messages: list[dict], llm: LLM | None):
+    def _hard_collapse(self, messages: list[dict], llm: LLM | None) -> bool:
         """Layer 3: Emergency compression. Keep only last 4 messages + summary."""
         split = self._safe_split(messages, 4 if len(messages) > 4 else 2)
         tail = messages[split:]
         old = messages[:split]
+        if any("reasoning_content" in message for message in old):
+            return False
         summary = self._get_summary(old, llm)
         self._notify_compressed(old, summary)
 
@@ -180,6 +275,7 @@ class ContextManager:
             "content": "Context restored. Continuing from where we left off.",
         })
         messages.extend(tail)
+        return True
 
     def _notify_compressed(self, old_messages: list[dict], summary: str) -> None:
         """Fire the on_compressed hook so compressed content is demoted to the
