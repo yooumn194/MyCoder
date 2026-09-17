@@ -10,10 +10,10 @@ from pathlib import Path
 
 from .base import Tool
 from .path_guard import PathGuard, PathTraversalError
+from .file_state import FileStateTracker
 from .workspace_path import (
     get_project_root,
     resolve_workspace_path,
-    try_on_demand_sync,
 )
 
 MAX_LINES = 300
@@ -21,6 +21,7 @@ MAX_LINES = 300
 
 class ReadFileTool(Tool):
     predictive_safe = True
+    cacheable = False  # workspace content can change between identical reads
     name = "read_file"
     description = (
         "Read a file with line numbers (format: ' 42 | line'). At most 300 "
@@ -47,8 +48,14 @@ class ReadFileTool(Tool):
         "required": ["file_path"],
     }
 
-    def __init__(self, *, project_root: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        project_root: Path | str | None = None,
+        file_state: FileStateTracker | None = None,
+    ) -> None:
         self._project_root = project_root
+        self._file_state = file_state
 
     def execute(
         self,
@@ -78,16 +85,13 @@ class ReadFileTool(Tool):
                 return f"[错误：{e}]"
 
             if not p.exists():
-                # a /workspace file may exist only in the sandbox — pull it on demand
+                # /workspace IS the host project tree (single bind-mounted
+                # filesystem), so "missing here" means "missing, full stop".
                 if file_path.startswith("/workspace"):
-                    try_on_demand_sync(file_path)
-                if not p.exists():
-                    if file_path.startswith("/workspace"):
-                        return (
-                            f"[错误：{file_path} 在沙箱工作区中不存在。请先执行相关命令生成该文件，"
-                            "或调用 sync_workspace() 同步。]"
-                        )
-                    return f"[错误：文件不存在：{file_path}]"
+                    return (
+                        f"[错误：{file_path} 在工作区中不存在。请先执行相关命令生成该文件。]"
+                    )
+                return f"[错误：文件不存在：{file_path}]"
             if not p.is_file():
                 return f"[错误：{file_path} 是目录，不是文件]"
 
@@ -98,6 +102,8 @@ class ReadFileTool(Tool):
 
             # 4. read text
             text = p.read_text(encoding="utf-8", errors="replace")
+            if self._file_state is not None:
+                self._file_state.observe(p, text)
         except Exception as e:
             return f"[错误：{e}]"
 

@@ -25,6 +25,9 @@ from .models import ExecutionResult
 
 logger = get_logger()
 
+_MAX_DIFF_FILES = 256
+_MAX_DIFF_BYTES = 2 * 1024 * 1024
+
 # Leading commands allowed in degraded mode. Kept to offline-safe, typical dev
 # tools; network tools (curl/wget/ssh/… ) are deliberately excluded because a
 # host process with network can exfiltrate. This set is a *convention*, not a
@@ -101,13 +104,66 @@ class LocalExecutor:
         return await asyncio.to_thread(self._run, command, timeout)
 
     async def get_diff(self) -> str:
-        """Unified diff against the host repo (tracked changes)."""
-        result = await asyncio.to_thread(
-            self._run, "git diff --no-color && git diff --cached --no-color", 10
+        """Unified diff against the host repo, including untracked files."""
+        return await asyncio.to_thread(self._repository_diff)
+
+    def _repository_diff(self) -> str:
+        parts: list[str] = []
+        for args in (
+            ["git", "diff", "--no-color"],
+            ["git", "diff", "--cached", "--no-color"],
+        ):
+            result = subprocess.run(
+                args,
+                cwd=self.project_dir,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return f"(git diff failed: {result.stderr.strip()})"
+            parts.append(result.stdout.strip())
+        untracked = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            cwd=self.project_dir,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
         )
-        if result.exit_code != 0:
-            return f"(git diff failed: {result.stderr.strip()})"
-        return result.stdout.strip() or "(no changes)"
+        if untracked.returncode != 0:
+            return f"(git diff failed: {untracked.stderr.strip()})"
+        paths = [path for path in untracked.stdout.split("\0") if path]
+        if len(paths) > _MAX_DIFF_FILES:
+            return f"(git diff refused: {len(paths)} untracked files)"
+        for path in paths:
+            result = subprocess.run(
+                [
+                    "git",
+                    "diff",
+                    "--no-index",
+                    "--no-color",
+                    "--binary",
+                    "--",
+                    "/dev/null",
+                    path,
+                ],
+                cwd=self.project_dir,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+            )
+            if result.returncode not in (0, 1):
+                return f"(git diff failed for {path!r}: {result.stderr.strip()})"
+            parts.append(result.stdout.strip())
+            if sum(len(part.encode()) for part in parts) > _MAX_DIFF_BYTES:
+                return f"(git diff refused: exceeds {_MAX_DIFF_BYTES} bytes)"
+        return "\n".join(part for part in parts if part).strip() or "(no changes)"
 
     def _run(self, command: str, timeout: int) -> ExecutionResult:
         started = time.monotonic()

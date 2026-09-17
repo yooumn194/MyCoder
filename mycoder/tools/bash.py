@@ -37,6 +37,7 @@ _DANGEROUS_PATTERNS = [
 
 
 class BashTool(Tool):
+    idempotent = False  # arbitrary commands may have side effects
     name = "bash"
     description = (
         "Execute a shell command. Returns stdout, stderr, and exit code. "

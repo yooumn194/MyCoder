@@ -77,6 +77,16 @@ class LLMCallTrace:
     cached_tokens: int = 0  # prompt tokens served from the provider's prefix cache
     reasoning_tokens: int = 0  # subset of completion tokens used for reasoning
     timestamp: float = field(default_factory=time.time)
+    # Provider wire contract metadata.  These fields are optional so traces
+    # written by older workers remain readable after a rolling deployment.
+    provider: str = "unknown"
+    tool_dialect: str | None = None
+    wire_tool_names: list[str] = field(default_factory=list)
+    tool_choice_requested: Any = None
+    tool_choice_wire: Any = None
+    strict_tool_choice: bool = False
+    tool_choice_degraded: bool = False
+    phase: str | None = None
 
 
 class LLMTracer:
@@ -147,7 +157,21 @@ class LLMTracer:
 
     # ---------------------------------------------------------------- trace
     @contextmanager
-    def trace(self, session_id: str, caller: str, model: str) -> Iterator[dict]:
+    def trace(
+        self,
+        session_id: str,
+        caller: str,
+        model: str,
+        *,
+        projected_tokens: int = 0,
+        provider: str = "unknown",
+        tool_dialect: str | None = None,
+        wire_tool_names: list[str] | None = None,
+        tool_choice_requested: Any = None,
+        tool_choice_wire: Any = None,
+        strict_tool_choice: bool = False,
+        phase: str | None = None,
+    ) -> Iterator[dict]:
         """Time one LLM call. Yields a mutable dict the caller fills with
         prompt_tokens / completion_tokens before the block exits. On exception
         the trace is recorded as error/timeout and re-raised."""
@@ -157,10 +181,20 @@ class LLMTracer:
             "cached_tokens": 0,
             "reasoning_tokens": 0,
             "ttft_ms": None,
+            "provider": str(provider or "unknown"),
+            "tool_dialect": tool_dialect,
+            "wire_tool_names": list(wire_tool_names or []),
+            "tool_choice_requested": tool_choice_requested,
+            "tool_choice_wire": tool_choice_wire,
+            "strict_tool_choice": bool(strict_tool_choice),
+            "tool_choice_degraded": False,
+            "phase": phase,
         }
         guard = self._budget_guard_for(session_id)
         if guard is not None:
             guard.check_and_enforce(session_id)
+            if projected_tokens:
+                guard.ensure_capacity(session_id, projected_tokens)
         started = time.monotonic()
         try:
             yield ctx
@@ -178,12 +212,23 @@ class LLMTracer:
                 ttft_ms=ctx.get("ttft_ms"),
                 cached_tokens=ctx.get("cached_tokens"),
                 reasoning_tokens=ctx.get("reasoning_tokens"),
+                provider=ctx.get("provider", provider),
+                tool_dialect=ctx.get("tool_dialect", tool_dialect),
+                wire_tool_names=ctx.get("wire_tool_names"),
+                tool_choice_requested=ctx.get("tool_choice_requested"),
+                tool_choice_wire=ctx.get("tool_choice_wire"),
+                strict_tool_choice=ctx.get("strict_tool_choice", strict_tool_choice),
+                tool_choice_degraded=ctx.get("tool_choice_degraded", False),
+                phase=ctx.get("phase", phase),
             )
             logger.warning(
                 "llm_call_failed",
                 session_id=session_id,
                 caller=caller,
                 model=model,
+                provider=ctx.get("provider", provider),
+                tool_dialect=ctx.get("tool_dialect", tool_dialect),
+                phase=ctx.get("phase", phase),
                 status=status,
                 error_msg=str(exc),
                 duration_ms=_ms(started),
@@ -205,6 +250,14 @@ class LLMTracer:
             ttft_ms=ctx.get("ttft_ms"),
             cached_tokens=ctx.get("cached_tokens"),
             reasoning_tokens=ctx.get("reasoning_tokens"),
+            provider=ctx.get("provider", provider),
+            tool_dialect=ctx.get("tool_dialect", tool_dialect),
+            wire_tool_names=ctx.get("wire_tool_names"),
+            tool_choice_requested=ctx.get("tool_choice_requested"),
+            tool_choice_wire=ctx.get("tool_choice_wire"),
+            strict_tool_choice=ctx.get("strict_tool_choice", strict_tool_choice),
+            tool_choice_degraded=ctx.get("tool_choice_degraded", False),
+            phase=ctx.get("phase", phase),
         )
         if guard is not None:
             guard.check_and_enforce(session_id)
@@ -218,6 +271,10 @@ class LLMTracer:
             reasoning_tokens=int(ctx.get("reasoning_tokens") or 0),
             total_tokens=prompt + completion,
             duration_ms=duration,
+            provider=ctx.get("provider", provider),
+            tool_dialect=ctx.get("tool_dialect", tool_dialect),
+            tool_choice_degraded=bool(ctx.get("tool_choice_degraded", False)),
+            phase=ctx.get("phase", phase),
         )
 
     def _record(
@@ -233,6 +290,14 @@ class LLMTracer:
         ttft_ms: float | None = None,
         cached_tokens: int = 0,
         reasoning_tokens: int = 0,
+        provider: str = "unknown",
+        tool_dialect: str | None = None,
+        wire_tool_names: list[str] | None = None,
+        tool_choice_requested: Any = None,
+        tool_choice_wire: Any = None,
+        strict_tool_choice: bool = False,
+        tool_choice_degraded: bool = False,
+        phase: str | None = None,
     ) -> None:
         trace = LLMCallTrace(
             call_id=_new_id(),
@@ -248,6 +313,14 @@ class LLMTracer:
             ttft_ms=ttft_ms,
             cached_tokens=int(cached_tokens or 0),
             reasoning_tokens=int(reasoning_tokens or 0),
+            provider=str(provider or "unknown"),
+            tool_dialect=tool_dialect,
+            wire_tool_names=list(wire_tool_names or []),
+            tool_choice_requested=tool_choice_requested,
+            tool_choice_wire=tool_choice_wire,
+            strict_tool_choice=bool(strict_tool_choice),
+            tool_choice_degraded=bool(tool_choice_degraded),
+            phase=phase,
         )
         persisted = False
         if self.store is not None:
@@ -343,6 +416,10 @@ class LLMTracer:
             "prompt_cache_hit_tokens": 0,
             "prompt_cache_hit_rate": 0.0,
             "error_count": 0,
+            "by_provider": {},
+            "by_tool_dialect": {},
+            "tool_choice_degraded_calls": 0,
+            "by_phase": {},
         }
         if n == 0:
             return empty
@@ -357,6 +434,19 @@ class LLMTracer:
         avg_ttft = sum(ttfts) / len(ttfts) if ttfts else 0.0
         p95_ttft = sorted(ttfts)[min(len(ttfts) - 1, int(len(ttfts) * 0.95) - 1)] if ttfts else 0.0
         cached = sum(t.cached_tokens for t in traces)
+        by_provider: dict[str, dict[str, int]] = {}
+        by_dialect: dict[str, int] = {}
+        by_phase: dict[str, int] = {}
+        for trace in traces:
+            provider = str(trace.provider or "unknown")
+            bucket = by_provider.setdefault(provider, {"calls": 0, "tokens": 0, "errors": 0})
+            bucket["calls"] += 1
+            bucket["tokens"] += trace.prompt_tokens + trace.completion_tokens
+            bucket["errors"] += int(trace.status != "success")
+            dialect = str(trace.tool_dialect or "unknown")
+            by_dialect[dialect] = by_dialect.get(dialect, 0) + 1
+            phase = str(trace.phase or "unknown")
+            by_phase[phase] = by_phase.get(phase, 0) + 1
         return {
             "session_id": label,
             "total_calls": n,
@@ -372,6 +462,10 @@ class LLMTracer:
             "prompt_cache_hit_tokens": cached,
             "prompt_cache_hit_rate": round(cached / max(1, prompt), 4),
             "error_count": errors,
+            "by_provider": by_provider,
+            "by_tool_dialect": by_dialect,
+            "tool_choice_degraded_calls": sum(t.tool_choice_degraded for t in traces),
+            "by_phase": by_phase,
         }
 
     def get_cost_estimate(self, session_id: str, price_per_1k: dict[str, Any] | None = None) -> dict:

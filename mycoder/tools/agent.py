@@ -30,6 +30,7 @@ MAX_OUTPUT = 5000
 
 
 class AgentTool(Tool):
+    idempotent = False  # spawning a sub-agent consumes state and model budget
     name = "agent"
     description = (
         "Spawn a sub-agent to handle a complex sub-task independently. "

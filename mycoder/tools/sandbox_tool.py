@@ -9,25 +9,28 @@ dangerous. The execution pipeline now has three layers:
        commands, mirroring Claude Code's permission system
     3. sandbox backend  (Docker, else the degraded local executor)
 
-Layers 1 and 2 guard the host; layer 3 is the real containment. After a
-successful run the tool reports which /workspace files changed (via docker
-diff) instead of copying them out wholesale; sync_workspace() is the explicit
-pull-back step, so npm-install-sized change sets never flood the host.
+Layers 1 and 2 guard the host; layer 3 is the real containment. Containment is
+expressed as permissions, not as a second copy of the tree: the container
+bind-mounts the host project directory read-write at /workspace, so the shell
+and the file tools act on the same files. After a successful run the tool
+reports which files changed, purely as information.
 """
 
 import re
 
+from ..patch_policy import patch_scope_violation
 from ..sandbox import (
     ALLOW_RISKY_ENV,
     ConfirmPolicy,
     ExecutionResult,
+    RestorePoint,
     SandboxManager,
     run_async,
 )
 from ..sandbox.executor import set_active_manager
 from ..sandbox.logger import get_logger
 from ..sandbox.policy import ALTERNATIVE_HINTS
-from .base import Tool
+from .base import Tool, ToolResult
 from .bash import _check_dangerous
 
 logger = get_logger()
@@ -49,9 +52,35 @@ def _get_policy() -> ConfirmPolicy:
     fresh SandboxManager starts with an empty approval cache."""
     return _get_manager().policy
 
-# Deletion-class commands get an extra hint in the tool output: the host won't
-# mirror the deletion unless the agent explicitly calls sync_workspace(clean=True).
-_DELETE_COMMAND_RE = re.compile(r"\b(rm\s|git\s+clean|rmdir\s)")
+
+def capture_session_restore_point() -> RestorePoint | None:
+    """Record where the project stood before the first command of a session.
+
+    P0-1 mounts the project directory itself into the container, so a
+    destructive command reaches the real checkout — callers (the CLI, the API)
+    invoke this at session start so recovery does not depend on noticing the
+    damage in time.
+    """
+    return _get_manager().capture_restore_point()
+
+# Deletion-class commands get an extra hint in the tool output: the deletion is
+# already real on the host (one filesystem), so it shows up in `git status`
+# immediately and can only be undone from the session's restore point.
+_DELETE_COMMAND_RE = re.compile(
+    r"(?:\brm\s|\bgit\s+clean|\brmdir\s|\bfind\b[^|;]*\s-delete\b|\bshred\b|"
+    r"\bxargs\b[^|;]*\brm\b|"
+    r"\b(?:shutil\.rmtree|os\.removedirs|os\.remove|os\.unlink)\s*\()"
+)
+# Categories whose denial still deserves a recovery hint: the model that just
+# failed to destroy something may reach for a workaround next.
+_DESTRUCTIVE_CATEGORIES = frozenset(
+    {
+        "recursive_delete",
+        "git_rewrite",
+        "workspace_overwrite",
+        "workspace_overwrite_tracked",
+    }
+)
 
 
 class ExecuteInSandboxTool(Tool):
@@ -60,10 +89,12 @@ class ExecuteInSandboxTool(Tool):
     description = (
         "Run a shell command in an isolated Docker sandbox and return stdout, "
         "stderr, exit code. Isolation: no network, read-only root, non-root, "
-        "zero capabilities, memory/CPU/pids limits, hard timeout. Writes land "
-        "in /workspace — call sync_workspace() to pull them back. Risky "
-        "commands (network, installs, git push, recursive rm) ask for "
-        "confirmation first. Use for tests, git, scripts."
+        "zero capabilities, memory/CPU/pids limits, hard timeout. The sandbox "
+        "mounts the project directory itself at /workspace, so files written "
+        "here are visible to read_file/edit_file immediately and vice versa "
+        "(one filesystem, nothing to sync). Risky commands (network, installs, "
+        "git push, recursive rm) ask for confirmation first. Use for tests, "
+        "git, scripts."
     )
     parameters = {
         "type": "object",
@@ -114,31 +145,67 @@ class ExecuteInSandboxTool(Tool):
         allowed, rule = run_async(self._manager().policy.decide(command))
         if not allowed:
             hint = ALTERNATIVE_HINTS.get(rule.category, "请调整命令")
+            recovery = (
+                self._manager().recovery.hint()
+                if rule.category in _DESTRUCTIVE_CATEGORIES
+                else ""
+            )
             return (
                 f"⚠ Cancelled: {rule.reason}\n"
                 f"Command: {command}\n"
                 f"替代方案: {hint}\n"
                 f"不要重试相同命令。若确需执行，请设置 {ALLOW_RISKY_ENV}=1 或调整命令。"
+                + (f"\n{recovery}" if recovery else "")
             )
 
+        manager = self._manager()
         try:
-            result = run_async(self._manager().execute(command, timeout))
+            result = run_async(manager.execute(command, timeout))
         except Exception as e:  # backend failure surfaces as a plain error
-            return f"Error executing in sandbox: {e}"
+            return ToolResult(f"Error executing in sandbox: {e}", status="error")
         out = _format(result, command)
+        # Report how the process ended as DATA, not as prose: the harness
+        # decides "did the check pass?" from this field instead of guessing
+        # from the command string (P0-4).
+        status = "success"
+        if result.blocked:
+            status = "error"
+        elif out.startswith("Error"):
+            status = "error"
         if result.ok:
-            out += _changed_files_suffix(command, manager=self._manager())
-        return out
+            if manager.benchmark_mode:
+                try:
+                    diff = run_async(manager.get_diff())
+                    violation = patch_scope_violation(
+                        diff,
+                        project_root=manager.project_dir,
+                        protect_benchmark_files=True,
+                    )
+                except Exception as exc:
+                    return ToolResult(
+                        f"Error: benchmark patch safety check failed closed: {exc}",
+                        status="error",
+                        exit_code=result.exit_code,
+                    )
+                if violation is not None:
+                    return ToolResult(
+                        f"Error: command left an unsafe benchmark patch: {violation}. "
+                        "Undo the unintended file change before continuing.",
+                        status="error",
+                        exit_code=result.exit_code,
+                    )
+            out += _changed_files_suffix(command, manager=manager)
+        return ToolResult(out, status=status, exit_code=result.exit_code)
 
 
 def _changed_files_suffix(
     command: str, manager: SandboxManager | None = None
 ) -> str:
-    """Which /workspace files changed (from docker diff), appended to output.
+    """Which files changed, appended to the output.
 
-    Never copies files out — that is sync_workspace()'s job. The list is
-    truncated to 50 entries with a total count so an npm-install-sized change
-    set doesn't flood the context.
+    Purely informational — the changes are already on disk in the shared tree.
+    The list is truncated to 50 entries with a total count so an
+    npm-install-sized change set doesn't flood the context.
     """
     sync = (manager or _get_manager()).get_sync()
     suffix = ""
@@ -150,15 +217,26 @@ def _changed_files_suffix(
         if changed:
             suffix += "\n[changed files: " + ", ".join(changed) + "]"
             if truncated:
-                suffix += (
-                    f"\n[total {total} files changed; list truncated. "
-                    f"Call sync_workspace() to sync all of them.]"
-                )
+                suffix += f"\n[total {total} files changed; list truncated.]"
     if _DELETE_COMMAND_RE.search(command):
         suffix += (
-            "\n[files deleted in sandbox. To mirror deletions on the host, "
-            "call sync_workspace(clean=True).]"
+            "\n[files deleted. The deletion is already reflected in the "
+            "working tree and in git status.]"
         )
+        recovery = (manager or _get_manager()).recovery.hint()
+        if recovery:
+            suffix += f"\n{recovery}"
+    else:
+        # A successful overwrite/reset is just as capable of erasing the
+        # pre-run state as rm.  Surface the session-scoped restore command in
+        # the tool result so a model does not have to infer it from git status.
+        active_manager = manager or _get_manager()
+        policy = getattr(active_manager, "policy", None)
+        rule = policy.check(command) if policy is not None else None
+        if rule is not None and rule.category in _DESTRUCTIVE_CATEGORIES:
+            recovery = active_manager.recovery.hint()
+            if recovery:
+                suffix += f"\n{recovery}"
     return suffix
 
 

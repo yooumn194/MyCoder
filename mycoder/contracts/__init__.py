@@ -18,6 +18,7 @@ from .envelope import (
     new_envelope_instance_id,
     parse_envelope,
 )
+from .run import RunContract
 from .prompts import SUBAGENT_CONTRACT_PROMPT
 from .subagent_result import (
     CATEGORY_RETRYABLE,
@@ -48,6 +49,7 @@ __all__ = [
     "PlanResult",
     "ReviewResult",
     "SubagentResultEnvelope",
+    "RunContract",
     "SubagentResultValidator",
     "Suggestion",
     "category_to_strategy",

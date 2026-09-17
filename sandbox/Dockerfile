@@ -8,16 +8,20 @@
 # Two security layers live HERE vs. at RUNTIME (sandbox/docker_executor.py):
 #   - this file builds the image (tools + a non-root user)
 #   - the executor starts every container with read_only rootfs, no network,
-#     dropped capabilities, no-new-privileges, mem/cpu caps, and the project
-#     mounted read-only at /src. Keeping the runtime constraints in code (not
-#     baked into the image) lets them be enforced per-launch and audited.
+#     dropped capabilities, no-new-privileges, mem/cpu caps, and the host
+#     project directory bind-mounted READ-WRITE at /workspace (one filesystem:
+#     the shell and the host file tools edit the same tree). Keeping the
+#     runtime constraints in code (not baked into the image) lets them be
+#     enforced per-launch and audited.
 
 FROM python:3.12-slim
 
 # --- tooling ---------------------------------------------------------------
-# git + ripgrep are the agent's bread and butter; rsync is used for
-# workspace<->host sync tooling; curl/gzip exist only to fetch the
-# tree-sitter-cli binary and are part of the image for reproducibility.
+# git + ripgrep are the agent's bread and butter. rsync is here for project
+# scripts that use it — nothing in MyCoder copies a workspace any more (the
+# container mounts the host project directory directly). curl/gzip exist only
+# to fetch the tree-sitter-cli binary and are part of the image for
+# reproducibility.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         git \
@@ -54,11 +58,13 @@ RUN case "${TARGETARCH}" in \
 # The agent's commands run as this user, never as root. `nologin` shell: the
 # sandbox never needs interactive logins. `--user-group` creates a matching
 # group too (a bare --gid 1000 would fail: a fresh slim image has no group
-# 1000). The Dockerfile pre-creates /workspace and chowns it to sandbox so
-# that a fresh named volume mounted there inherits sandbox ownership from the
-# image — which is what lets the executor provision it WITHOUT running as root.
+# 1000). uid 1000 matches the most common host uid. DockerSandbox remaps the
+# process to the host's non-root uid when it differs, so bind-mounted projects
+# remain writable in CI without chmod or a root container. The API still
+# accepts sandbox_user="root" for upstream SWE-bench images that have no
+# `sandbox` user.
 RUN useradd --create-home --uid 1000 --shell /usr/sbin/nologin --user-group sandbox \
-    && mkdir -p /workspace /src \
+    && mkdir -p /workspace \
     && chown -R sandbox:sandbox /workspace
 
 USER sandbox

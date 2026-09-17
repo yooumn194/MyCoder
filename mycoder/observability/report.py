@@ -1,7 +1,7 @@
 """Monitor report — one snapshot across every observability source (P3).
 
-Aggregates the LLM trace (global + per-session: latency / tokens / TTFT /
-errors / cost), production run success rate (from a StateBackend), into a
+Aggregates LLM and tool traces (global + per-session: latency / tokens / TTFT /
+errors / cost / mutations), production run success rate (from a StateBackend), into a
 single answerable dict — the "监控报告" that turns scattered metrics into one
 story. Served by GET /v1/agent/report.
 """
@@ -18,6 +18,7 @@ def build_monitor_report(
     sessions: list[dict] | None = None,
     price_per_1k: dict | None = None,
     trace_session_ids: list[str] | None = None,
+    tool_tracer=None,
 ) -> dict[str, Any]:
     """Aggregate one monitor snapshot.
 
@@ -26,14 +27,19 @@ def build_monitor_report(
         success rate); None skips that section.
     price_per_1k: price table for cost; None -> costs skipped.
     trace_session_ids: optional tenant-safe allowlist; None includes all traces.
+    tool_tracer: optional ToolTracer for action success/retry/mutation metrics.
     """
+    llm_session_ids = set(tracer.list_sessions())
+    tool_session_ids = set(tool_tracer.list_sessions()) if tool_tracer else set()
     if trace_session_ids is None:
-        session_ids = tracer.list_sessions()
+        session_ids = sorted(llm_session_ids | tool_session_ids)
         global_llm = tracer.get_global_summary()
+        global_tools = tool_tracer.get_global_summary() if tool_tracer else None
     else:
         allowed = set(trace_session_ids)
-        session_ids = [sid for sid in tracer.list_sessions() if sid in allowed]
+        session_ids = sorted((llm_session_ids | tool_session_ids) & allowed)
         global_llm = tracer.get_sessions_summary(session_ids)
+        global_tools = tool_tracer.get_sessions_summary(session_ids) if tool_tracer else None
     per_session: dict[str, dict[str, Any]] = {}
     total_cost = 0.0
     for sid in session_ids:
@@ -41,11 +47,7 @@ def build_monitor_report(
         cost = 0.0
         if price_per_1k:
             try:
-                cost = float(
-                    tracer.get_cost_estimate(sid, price_per_1k=price_per_1k)[
-                        "total_cost_usd"
-                    ]
-                )
+                cost = float(tracer.get_cost_estimate(sid, price_per_1k=price_per_1k)["total_cost_usd"])
             except Exception:  # noqa: BLE001 - cost is best-effort
                 cost = 0.0
         total_cost += cost
@@ -58,6 +60,9 @@ def build_monitor_report(
             "errors": s["error_count"],
             "cost_usd": round(cost, 6),
         }
+        if tool_tracer is not None:
+            tool_summary = tool_tracer.get_session_summary(sid)
+            per_session[sid]["tools"] = {key: value for key, value in tool_summary.items() if key != "session_id"}
 
     total_calls = global_llm["total_calls"]
     report: dict[str, Any] = {
@@ -70,16 +75,18 @@ def build_monitor_report(
             "avg_ttft_ms": global_llm["avg_ttft_ms"],
             "p95_ttft_ms": global_llm["p95_ttft_ms"],
             "errors": global_llm["error_count"],
-            "success_rate": round(
-                (total_calls - global_llm["error_count"]) / total_calls, 4
-            )
-            if total_calls
-            else 0.0,
+            "success_rate": round((total_calls - global_llm["error_count"]) / total_calls, 4) if total_calls else 0.0,
             "cost_usd": round(total_cost, 4),
             "sessions": len(session_ids),
+            "by_provider": global_llm.get("by_provider", {}),
+            "by_tool_dialect": global_llm.get("by_tool_dialect", {}),
+            "tool_choice_degraded_calls": global_llm.get("tool_choice_degraded_calls", 0),
+            "by_phase": global_llm.get("by_phase", {}),
         },
         "per_session": per_session,
     }
+    if global_tools is not None:
+        report["tools"] = {key: value for key, value in global_tools.items() if key != "session_id"}
 
     if sessions:
         done = [s for s in sessions if s.get("status") in ("success", "failed")]

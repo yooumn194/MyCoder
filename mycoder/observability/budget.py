@@ -30,13 +30,28 @@ _DEFAULT_SESSION_BUDGET = 100_000
 class TokenBudgetExceeded(Exception):
     """Raised when a session's token usage reaches its budget."""
 
-    def __init__(self, session_id: str, used_tokens: int, max_tokens: int) -> None:
+    def __init__(
+        self,
+        session_id: str,
+        used_tokens: int,
+        max_tokens: int,
+        *,
+        projected_tokens: int = 0,
+    ) -> None:
         self.session_id = session_id
         self.used_tokens = used_tokens
         self.max_tokens = max_tokens
-        super().__init__(
-            f"session '{session_id}' exceeded token budget: {used_tokens} >= {max_tokens}"
-        )
+        self.projected_tokens = max(0, int(projected_tokens))
+        projected_total = used_tokens + self.projected_tokens
+        if self.projected_tokens:
+            message = (
+                f"session '{session_id}' lacks capacity for next LLM call: "
+                f"{used_tokens} used + {self.projected_tokens} projected > {max_tokens}"
+            )
+        else:
+            message = f"session '{session_id}' exceeded token budget: {used_tokens} >= {max_tokens}"
+        self.projected_total = projected_total
+        super().__init__(message)
 
 
 class TokenBudgetGuard:
@@ -107,3 +122,27 @@ class TokenBudgetGuard:
 
     def get_remaining(self, session_id: str) -> int:
         return max(0, self.max_tokens_per_session - self._usage(session_id))
+
+    def get_used(self, session_id: str) -> int:
+        """Return authoritative cumulative usage for scoped runtime policies."""
+        return max(0, self._usage(session_id))
+
+    def ensure_capacity(self, session_id: str, projected_tokens: int) -> int:
+        """Reject a call whose estimated prompt+completion would cross the cap."""
+        used = self._usage(session_id)
+        projected = max(0, int(projected_tokens))
+        if used + projected > self.max_tokens_per_session:
+            logger.warning(
+                "token_budget_call_rejected",
+                session_id=session_id,
+                used_tokens=used,
+                projected_tokens=projected,
+                max_tokens=self.max_tokens_per_session,
+            )
+            raise TokenBudgetExceeded(
+                session_id=session_id,
+                used_tokens=used,
+                max_tokens=self.max_tokens_per_session,
+                projected_tokens=projected,
+            )
+        return self.max_tokens_per_session - used - projected

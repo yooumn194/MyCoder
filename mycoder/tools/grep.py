@@ -16,6 +16,7 @@ _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".tox", "d
 
 class GrepTool(Tool):
     predictive_safe = True
+    cacheable = False  # search results depend on mutable workspace content
     name = "grep"
     description = (
         "Search file contents with regex. "

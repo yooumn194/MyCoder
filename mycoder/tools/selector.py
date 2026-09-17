@@ -35,7 +35,6 @@ CORE_TOOLS: frozenset[str] = frozenset(
         # blocks every mutation — a deadlock. Both must always be present.
         "todo_write",
         "todo_update",
-        "sync_workspace",   # sandbox sync is required right after execute
         "spawn_subagent",   # delegation is a core loop primitive
         "memory_search",    # agentic RAG core
     }

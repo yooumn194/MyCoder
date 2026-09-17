@@ -177,6 +177,7 @@ class SafeHTTPSHandler(urllib.request.HTTPSHandler):
 
 
 class FetchUrlTool(Tool):
+    cacheable = False  # remote resources can change between requests
     name = "fetch_url"
     description = (
         "Fetch text from a public http(s) URL. Private, loopback, link-local "

@@ -23,6 +23,7 @@ _DEFAULT_EXCLUDED = {"node_modules", ".git", "__pycache__"}
 
 class ListFilesTool(Tool):
     predictive_safe = True
+    cacheable = False  # the directory tree is mutable
     name = "list_files"
     description = (
         "List files matching a glob pattern (e.g. '**/*.py'), one path per "

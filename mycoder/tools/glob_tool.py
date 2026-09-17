@@ -12,6 +12,7 @@ from .path_guard import PathGuard, PathTraversalError
 
 class GlobTool(Tool):
     predictive_safe = True
+    cacheable = False  # the directory tree is mutable
     name = "glob"
     description = (
         "Find files matching a glob pattern. "

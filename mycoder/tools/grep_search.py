@@ -42,6 +42,7 @@ class _SearchError(Exception):
 
 class GrepSearchTool(Tool):
     predictive_safe = True
+    cacheable = False  # search results depend on mutable workspace content
     name = "grep_search"
     description = (
         "Regex-search the project, matches grouped by file with line numbers. "

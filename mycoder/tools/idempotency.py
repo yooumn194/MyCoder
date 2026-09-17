@@ -4,9 +4,9 @@ A non-idempotent failure is the classic Agent footgun: a write tool fails
 *after* applying its side effect, the retry re-runs it, and the effect lands
 twice. Two complementary guards (see Agent._exec_tool / tools/base.py):
 
-  1. IdempotencyStore — for idempotent tools, an identical `(tool_name, args)`
-     call that already completed is served from cache instead of re-executed,
-     so the agent cannot re-apply the same write twice by re-issuing it.
+  1. IdempotencyStore — only tools with ``cacheable=True`` serve an identical
+     completed `(tool_name, args)` call from cache. Mutable observations remain
+     fresh even though they are safe to retry.
   2. retry_safe — non-idempotent tools are never auto-retried by
      run_with_correction (their side effect may already have happened).
 
@@ -28,7 +28,7 @@ def _fingerprint(args: dict[str, Any]) -> str:
 
 
 class IdempotencyStore:
-    """Process/Agent-scoped record of completed (tool, args) executions.
+    """Agent-scoped record of cacheable completed tool executions.
 
     The dict is guarded by a lock because the agent executes parallel tool
     calls on a thread pool (agent.py) — concurrent get/put must not race.
