@@ -33,6 +33,7 @@ from mycoder.observability.budget import TokenBudgetGuard
 from mycoder.observability.ratelimit import RateLimiter
 from mycoder.observability.store import ObservabilityStore, create_observability_store
 from mycoder.observability.trace import LLMTracer
+from mycoder.observability.tool_trace import ToolTracer
 from mycoder.tools import ALL_TOOLS
 from mycoder.tools import build_scoped_tools
 
@@ -41,6 +42,7 @@ from .state_backend import StateBackend, create_state_backend
 _state_backend: StateBackend | None = None
 _llm = None
 _tracer: LLMTracer | None = None
+_tool_tracer: ToolTracer | None = None
 _checkpoint_store: CheckpointStore | None = None
 _observability_store: ObservabilityStore | None = None
 _alert_manager: AlertManager | None = None
@@ -123,6 +125,14 @@ def get_tracer() -> LLMTracer:
     return _tracer
 
 
+def get_tool_tracer() -> ToolTracer:
+    """Durable action-layer trace shared by API workers and subagents."""
+    global _tool_tracer
+    if _tool_tracer is None:
+        _tool_tracer = ToolTracer(store=get_observability_store())
+    return _tool_tracer
+
+
 def get_rate_limiter() -> RateLimiter | None:
     """Configured distributed limiter; None keeps the endpoint unlimited."""
     global _rate_limiter, _rate_limiter_ready
@@ -136,7 +146,7 @@ def get_rate_limiter() -> RateLimiter | None:
 
 def reset_observability_runtime() -> None:
     """Close/reset process handles without deleting persisted state (tests/reload)."""
-    global _tracer, _observability_store, _alert_manager, _rate_limiter, _llm
+    global _tracer, _tool_tracer, _observability_store, _alert_manager, _rate_limiter, _llm
     global _rate_limiter_ready
     _llm = None  # it owns the old tracer reference
     if _observability_store is not None:
@@ -145,6 +155,7 @@ def reset_observability_runtime() -> None:
         except Exception:  # noqa: BLE001 - teardown is best-effort
             pass
     _tracer = None
+    _tool_tracer = None
     _alert_manager = None
     _rate_limiter = None
     _rate_limiter_ready = False
@@ -156,13 +167,9 @@ def get_checkpoint_store() -> CheckpointStore:
     global _checkpoint_store
     if _checkpoint_store is None:
         if os.getenv("STATE_BACKEND", "local").strip().lower() == "redis":
-            _checkpoint_store = RedisCheckpointStore(
-                os.getenv("REDIS_URL", "redis://localhost:6379/0")
-            )
+            _checkpoint_store = RedisCheckpointStore(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
         else:
-            _checkpoint_store = CheckpointStore(
-                base_dir=os.getenv("MYCODER_CHECKPOINT_DIR") or None
-            )
+            _checkpoint_store = CheckpointStore(base_dir=os.getenv("MYCODER_CHECKPOINT_DIR") or None)
     return _checkpoint_store
 
 
@@ -178,15 +185,20 @@ def get_default_llm():
     from mycoder.llm import LLM, LiteLLM
 
     llm_cls = LiteLLM if cfg.provider == "litellm" else LLM
+    llm_options = {}
+    if cfg.provider == "deepseek" and cfg.thinking != "auto":
+        llm_options["extra_body"] = {"thinking": {"type": cfg.thinking}}
     _llm = llm_cls(
         model=cfg.model,
         api_key=cfg.api_key,
         base_url=cfg.base_url,
         provider=cfg.provider,
+        tool_dialect=cfg.tool_dialect,
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
         tracer=get_tracer(),
         caller="api",
+        **llm_options,
     )
     return _llm
 
@@ -209,6 +221,10 @@ def get_orchestrator(
         checkpoint_store: CheckpointStore | None = None,
         workspace_root: str | None = None,
         reasoning_strategy: str | None = None,
+        sandbox_policy: str = "interactive",
+        sandbox_image: str | None = None,
+        sandbox_user: str = "sandbox",
+        soft_budget_ratio: float | None = None,
     ) -> Orchestrator:
         from mycoder.memory.experience import remember_replan
         from mycoder.model_router import build_model_factory
@@ -217,13 +233,21 @@ def get_orchestrator(
         llm = llm if llm is not None else get_default_llm()
         manager = None
         if tools is None and workspace_root is not None:
-            tools, manager = build_scoped_tools(workspace_root, session_id)
+            tools, manager = build_scoped_tools(
+                workspace_root,
+                session_id,
+                sandbox_policy=sandbox_policy,
+                sandbox_image=sandbox_image,
+                sandbox_user=sandbox_user,
+            )
         runtime_tools = tools if tools is not None else ALL_TOOLS
         agent_factory = AgentFactory.from_defaults(
             llm=llm,
             tools=runtime_tools,
             max_context_tokens=Config.from_env().max_context_tokens,
             budget_guard=budget_guard,
+            soft_budget_ratio=soft_budget_ratio,
+            tool_tracer=get_tool_tracer(),
         )
         orchestrator = Orchestrator(
             blackboard=blackboard,
@@ -245,6 +269,7 @@ def get_orchestrator(
             # POST /v1/agent/run with resume=true reuses them.
             checkpoint_store=checkpoint_store or get_checkpoint_store(),
             reasoning_strategy=reasoning_strategy,
+            tool_tracer=get_tool_tracer(),
         )
         orchestrator.agent_factory = agent_factory
         # The API worker owns and tears down this per-run manager.

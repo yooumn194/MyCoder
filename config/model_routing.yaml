@@ -24,14 +24,16 @@ providers:
       fast: [base]
 
   deepseek:
+    # DeepSeek is deliberately single-model: role routing must never silently
+    # switch a calibrated run to chat/reasoner.
     tiers:
-      fast: "deepseek-chat"
-      standard: "deepseek-chat"
-      powerful: "deepseek-reasoner"
+      fast: "deepseek-flash"
+      standard: "deepseek-flash"
+      powerful: "deepseek-flash"
     fallbacks:
-      powerful: [standard, base]
-      standard: [base]
-      fast: [base]
+      powerful: [standard, fast]
+      standard: [fast]
+      fast: []
 
   openrouter:
     # The user-selected free model. Replace individual tiers when you want

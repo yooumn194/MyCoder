@@ -23,10 +23,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install dependencies
+      - name: Install uv
+        run: python -m pip install -U pip uv
+
+      - name: Install locked dependencies
         run: |
-          python -m pip install -U pip
-          python -m pip install -e ".[api,dev]"
+          uv sync --frozen --python "${{ matrix.python-version }}" --extra api --extra dev --extra sandbox
 
       # ripgrep for the live rg-backend tests (they skip when rg is absent).
       - name: Install ripgrep
@@ -39,13 +41,13 @@ jobs:
           esac
 
       - name: Run tests
-        run: python -m pytest tests/ -v
+        run: uv run --frozen python -m pytest tests/ -v
 
       - name: Validate evaluation dataset
-        run: python -m eval_bench.runner --dry-run
+        run: uv run --frozen python -m eval_bench.runner --dry-run
 
       - name: Compile
-        run: python -m compileall -q mycoder api eval_bench tests
+        run: uv run --frozen python -m compileall -q mycoder api eval_bench tests
 
   package:
     runs-on: ubuntu-latest
@@ -75,6 +77,7 @@ jobs:
           /tmp/mycoder-wheel-smoke/bin/mycoder-api --help
           /tmp/mycoder-wheel-smoke/bin/mycoder-bench --dry-run
           /tmp/mycoder-wheel-smoke/bin/mycoder-score --help
+          /tmp/mycoder-wheel-smoke/bin/mycoder-swebench --help
 
   lint:
     runs-on: ubuntu-latest
@@ -85,8 +88,11 @@ jobs:
           python-version: "3.13"
           cache: pip
 
-      - name: Install ruff
-        run: python -m pip install -U pip ruff
+      - name: Install lint tools
+        run: python -m pip install -U pip ruff uv
+
+      - name: Check dependency lock
+        run: uv lock --check
 
       - name: Ruff check
         run: ruff check mycoder api eval_bench tests
@@ -109,12 +115,14 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Install integration dependencies
-        run: python -m pip install -e ".[api,dev]"
+      - name: Install uv
+        run: python -m pip install -U pip uv
+      - name: Install locked integration dependencies
+        run: uv sync --frozen --python "3.12" --extra api --extra dev
       - name: Run real Redis integration tests
         env:
           MYCODER_TEST_REDIS_URL: redis://localhost:6379/15
-        run: python -m pytest tests/test_redis_integration.py -v
+        run: uv run --frozen python -m pytest tests/test_redis_integration.py -v
 
   docker-build:
     runs-on: ubuntu-latest
@@ -122,3 +130,27 @@ jobs:
       - uses: actions/checkout@v6
       - name: Build service image
         run: docker build --tag mycoder-ci .
+
+  docker-integration:
+    # Keep real-container tests out of the cross-platform unit-test matrix:
+    # GitHub-hosted macOS/Windows runners do not guarantee a Docker daemon,
+    # while ubuntu-latest provides one.  Building the exact image used by
+    # DockerSandbox turns the integration suite from an always-skipped smoke
+    # test into a CI gate for isolation, timeout and teardown regressions.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install uv
+        run: python -m pip install -U pip uv
+      - name: Install locked dependencies
+        run: uv sync --frozen --python "3.12" --extra api --extra dev --extra sandbox
+      - name: Check Docker daemon
+        run: docker info
+      - name: Build sandbox image
+        run: docker build --tag mycoder-sandbox:3.12 -f sandbox/Dockerfile sandbox/
+      - name: Run real Docker sandbox tests
+        run: uv run --frozen python -m pytest tests/test_sandbox_docker.py -v -rs

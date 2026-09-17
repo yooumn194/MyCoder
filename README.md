@@ -22,6 +22,10 @@ pip install -e .
 pip install -e ".[api]"
 mycoder-api --help
 
+# 可复现的开发环境（使用仓库提交的 uv.lock）
+uv sync --frozen --extra api --extra dev --extra sandbox
+uv run --frozen pytest tests/
+
 
 # 配置（任选一种 LLM）
 export OPENAI_API_KEY=sk-...
@@ -63,7 +67,7 @@ pip install fastembed sqlite-vec   # 或 pip install -e '.[memory-embed,memory-v
         │  21 个内置工具：沙箱执行 / 文件读写 / 搜索 / 记忆 / 子代理 / 规划
         ▼
 ④ Docker 沙箱（mycoder/sandbox/）
-        │  命令在隔离容器执行，/workspace 增量同步回宿主
+        │  项目目录直接挂载为 /workspace：命令与文件工具共用同一份文件
         ▼
 ⑤ 记忆系统（mycoder/memory/）
         │  跨会话事实 / 决策 / 经验，混合检索召回
@@ -95,22 +99,22 @@ for _ in range(max_rounds):          # 防死循环：轮次上限
 - **上下文压缩**：超 50% 截断工具输出、超 70% LLM 摘要旧轮、超 90% 硬折叠——压缩掉的内容经回调沉降进长期记忆库
 - **推理策略**：ReAct（默认）/ Plan-and-Execute / Reflection 三选一，未指定时**按任务自动路由**（重构→plan_execute、修 bug→reflection），`/strategy` 可运行时切换
 - **工具选择**：按当前会话相关性注入 Top-K 工具（核心 11 个常驻 + 相关度排序），省 token 且减少误选
-- **幂等与纠错**：相同 `(工具, 参数)` 幂等调用命中缓存不重复执行；失败按分类确定性重试（可重试 2 次、超时翻倍），非幂等写不自动重试
+- **幂等与纠错**：可安全重试（`idempotent`）与结果缓存（`cacheable`）是独立契约；工作区读写不跨轮缓存，避免编辑后读到旧快照；失败按分类确定性重试（可重试 2 次、超时翻倍），非幂等操作不自动重试
 - **收敛控制**：统一限制模型轮次、工具调用请求数和相同动作次数；连续无新证据时熔断，并在硬 token 上限前预留一次无工具总结调用
 
 ### ② LLM 推理层
 
 - 对接任意 OpenAI 兼容接口（`LLM` 类），也支持 LiteLLM 走 100+ 提供商
 - **流式输出**，并测量 TTFT（首 token 延迟）；token 用量精确统计，单独记录 reasoning token（tiktoken 兜底估算）
-- provider-aware 模型分级路由：简单子任务走 fast 档、复杂走 powerful 档；限流、超时、模型不可用时只在同一 provider 内安全降级（`config/model_routing.yaml`）
+- provider-aware 模型分级路由：简单子任务走 fast 档、复杂走 powerful 档；限流、超时、模型不可用时只在同一 provider 内安全降级。DeepSeek profile 的所有档位固定为 `deepseek-flash`，避免校准过程中静默换模（`config/model_routing.yaml`）
+- provider 边界的工具协议适配：内部统一使用 MyCoder 工具 IR；`deepseek-flash` 自动映射为 ZCode 风格的 `Read/Edit/Write/Bash/Glob/Grep`，响应再无损映射回内部名称，避免模型与 harness 的命名错配
 
 ### ③ 工具层
 
 | 工具 | 用途 | 实现要点 |
 |---|---|---|
-| `execute_in_sandbox` | 沙箱里跑 shell | Docker 硬化容器，见 §④ |
-| `sync_workspace` | 拉回沙箱变更 | `docker diff` 增量，`git status` 感知改动 |
-| `read_file` / `write_file` / `edit_file` | 文件读写 | 路径守卫防越权，`/workspace` 自动映射 |
+| `execute_in_sandbox` | 沙箱里跑 shell | Docker 硬化容器，见 §④；结果携带 `exit_code` |
+| `read_file` / `write_file` / `edit_file` | 文件读写 | 路径守卫防越权；Edit 强制先读并校验文件版本，拒绝过期写入 |
 | `grep_search` / `list_files` | 代码搜索 | rg 优先 + 纯 Python 兜底，路径受控 |
 | `memory_save` / `search` / … | 跨会话记忆 | 混合检索 + 去重 + 衰减 |
 | `spawn_subagent` | 派子代理 | 编排器委派，见 §⑥ |
@@ -126,9 +130,9 @@ user=sandbox 非 root · no-new-privileges · cap_drop=ALL 零权限
 mem 512m · cpu 0.5 核 · pids 128（防 fork bomb）
 ```
 
-- 项目目录只读挂载为 `/src`，可写的是独立 `/workspace` 卷——被攻破也只能读项目、改不了、出不去
+- **单文件系统**：项目目录直接挂载为 `/workspace`（可读写），命令与文件工具编辑同一份字节——被攻破的 containment 边界是权限（非 root、零 capability、无网络、只读根），不是"再复制一份"。宿主 UID 不是 1000 时，运行用户自动映射到当前宿主的非 root UID，避免 CI bind mount 因权限不一致而无法写入
 - 超时命令杀容器自愈重建，OOM 熔断（连挂 2 次停止重试）
-- **空闲自动回收**：闲置 `MYCODER_SANDBOX_IDLE_TIMEOUT`（默认 10 分钟）自动停容器、保留卷，下次调用无缝重启
+- **空闲自动回收**：闲置 `MYCODER_SANDBOX_IDLE_TIMEOUT`（默认 10 分钟）自动停容器；工作区就是宿主目录，回收零丢失，下次调用无缝重启
 - **退出清理**：进程退出（正常 / Ctrl+C / kill）经 `atexit` 钩子关沙箱容器、MCP 子进程、记忆库连接
 
 ### ⑤ 记忆系统
@@ -161,11 +165,11 @@ mem 512m · cpu 0.5 核 · pids 128（防 fork bomb）
 
 ### ⑧ 可观测（每次运行都被记录）
 
-- **LLM trace**：每次调用记延迟 / token / TTFT / 成本 / 错误，按会话聚合 avg/p95
-- **工具指标**：成功率 / 重试率 / 工具失败率 / 执行时长
+- **LLM trace**：每次调用记 provider / 工具 dialect / tool-choice 是否降级、延迟 / token / TTFT / 成本 / 错误，按会话聚合 avg/p95
+- **工具 Trace**：`GET /v1/agent/tool-traces/{session_id}` 返回脱敏的调用、重试、mutation、验证与强制动作反馈时间线
 - **预算与限流**：session token 预算（默认 100k），API 限流（令牌桶/漏桶/滑动窗口）
 - **SLO 告警**：成功率 <90%、p95 >5s 触发告警（防抖）
-- **监控报告**：`GET /v1/agent/report` 一页聚合所有指标 + 生产任务成功率
+- **监控报告**：`GET /v1/agent/report` 聚合 LLM、工具调用与生产任务成功率
 
 ---
 
@@ -213,7 +217,11 @@ mem 512m · cpu 0.5 核 · pids 128（防 fork bomb）
 | `MYCODER_MAX_CONTEXT` | `128000` | 上下文窗口 |
 | `MYCODER_SANDBOX_MEM/CPU/PIDS` | `512m/0.5/128` | 沙箱资源 |
 | `MYCODER_SANDBOX_IDLE_TIMEOUT` | `600` | 沙箱空闲回收（秒，0 禁用） |
+| `MYCODER_DOCKER_PING_TIMEOUT` | `5` | Docker 守护进程健康探测硬超时（秒） |
+| `MYCODER_SANDBOX_IMAGE_PULL_TIMEOUT` | `120` | 沙箱镜像拉取硬超时（秒） |
+| `MYCODER_SANDBOX_CONTAINER_OP_TIMEOUT` | `180` | Docker 容器创建、启动、回收及执行 SDK 调用硬超时（秒） |
 | `MYCODER_SESSION_BUDGET` | `100000` | 会话 token 预算 |
+| `MYCODER_BUDGET_PROJECTION_OUTPUT_TOKENS` | `1024` | 工具调用预算预检的输出安全边际；实际用量仍由 tracer 硬校验 |
 | `MYCODER_CONVERGENCE_MAX_ROUNDS` | `16` | 单次用户任务的模型动作轮次上限（同时受 Agent 自身 `max_rounds` 限制） |
 | `MYCODER_CONVERGENCE_MAX_TOOL_CALLS` | `32` | 单次任务允许进入执行层的工具调用请求总数 |
 | `MYCODER_CONVERGENCE_MAX_IDENTICAL_CALLS` | `2` | 相同工具及相同参数最多实际执行次数 |
@@ -221,7 +229,17 @@ mem 512m · cpu 0.5 核 · pids 128（防 fork bomb）
 | `MYCODER_CONVERGENCE_SOFT_BUDGET_RATIO` | `0.85` | 达到该预算比例后停止动作并尝试生成最终总结 |
 | `MYCODER_RATE_LIMIT` | 关 | API 每 tenant+client 的请求/分钟；SQLite/Redis 跨 worker 原子共享 |
 | `MYCODER_INJECTION_GUARD` | `on` | 注入防御开关 |
+| `MYCODER_INJECTION_CLASSIFIER` | `on` | 语义注入分类器；设为 `off` 时仍保留正则扫描，适合可信固定数据集校准 |
+| `MYCODER_LLM_TIMEOUT_SECONDS` | `180` | 单次 provider 请求/流读取超时（10–600 秒）；超时由编排层按瞬时故障纠偏重试一次 |
+| `MYCODER_MUTATION_EXTENSION_ROUNDS` | `2` | Patch 任务越过 soft budget 后允许的仅写入工具轮数；耗尽后以 `PATCH_REQUIRED` 失败 |
+| `MYCODER_MUTATION_FEEDBACK_ROUNDS` | `3` | implementer 试图无修改结束时的 Stop gate 上限；达到上限后显式失败 |
+| `MYCODER_INSPECTION_ROUNDS_BEFORE_ACTION` | `2` | Patch 任务允许连续只读探索的轮数；再给一轮定向取证，之后由执行前置门拒绝继续搜索并要求修改 |
+| `MYCODER_MUTATION_RESERVED_TOKENS` | `2048` | Patch 任务为实际编辑阶段保留的最小 token 额度；不会被前置探索消耗 |
+| `MYCODER_VERIFICATION_RESERVED_TOKENS` | `4096` | 需要验证的任务为测试/静态检查阶段保留的最小 token 额度 |
+| `MYCODER_TOOL_DIALECT` | `auto` | provider 工具协议：`auto`、`native`、`zcode`；`deepseek-flash` 在 auto 下使用 ZCode 风格名称 |
+| `MYCODER_<PROVIDER>_TOOL_DIALECT` | provider 默认值 | 按 provider profile 覆盖工具协议；benchmark 模式下若 provider 不支持强制 tool choice 会直接失败，不静默降级 |
 | `MYCODER_MODEL_TIER` | `standard` | 模型分级 |
+| `MYCODER_LOCK_BASE_MODEL` | `false` | 锁定所有子 Agent 使用基础模型；用于单模型可复现校准，禁用按角色换模与降级链 |
 
 ---
 

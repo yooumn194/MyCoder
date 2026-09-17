@@ -74,6 +74,7 @@ mycoder = "mycoder.cli:main"
 mycoder-api = "api.__main__:main"
 mycoder-bench = "eval_bench.runner:main"
 mycoder-score = "eval_bench.scorer:main"
+mycoder-swebench = "eval_bench.swe_verified.adapter:main"
 
 [project.urls]
 Homepage = "https://github.com/yooumn194/MyCoder"
@@ -83,3 +84,10 @@ Issues = "https://github.com/yooumn194/MyCoder/issues"
 [tool.ruff]
 line-length = 130
 target-version = "py311"
+extend-exclude = ["eval_bench/workspace"]
+
+[tool.ruff.lint]
+# Keep the CI contract explicit: Ruff releases may expand their defaults.
+# Additional rule families should be enabled deliberately after existing
+# findings are fixed, rather than breaking main because the tool upgraded.
+select = ["E4", "E7", "E9", "F"]
