@@ -13,6 +13,7 @@ drives the agent purely through the HTTP API and grades its code with pytest.
 | `scorer.py` | Pass@1 statistics (overall / by category / by difficulty), failure-reason distribution, `summary.json`, `report.md`, optional matplotlib `chart.png`. |
 | `_gen_dataset.py` | Generator that emits `dataset.json` (edit problems here and regenerate). |
 | `p1_openrouter_perf.py` | OpenRouter online benchmark for P1-4 reasoning strategies and P1-5 polluted-memory correction. |
+| `swe_verified/` | Prompt-safe 8×4 SWE-bench Verified suite plus an executable MyCoder-to-official-harness adapter. |
 
 ## P1-4 / P1-5 OpenRouter performance benchmark
 
@@ -50,13 +51,61 @@ know automatically which side is true.
 
 ## How it works
 
-1. **Start the API server** from the repo root (the file tools resolve paths
-   against the server's cwd, so the workspace must live under the repo root):
+### One-task control smoke
+
+After starting the API, use the fixed smoke preset before spending budget on a
+larger run. It records the effective provider/model/tool dialect and refuses to
+resume if any frozen setting changes:
+
+```bash
+python -m eval_bench.smoke --dry-run
+MYCODER_ENABLE_BENCHMARK_POLICY=true \
+MYCODER_REQUIRE_AUTH=false \
+MYCODER_WORKSPACE_ROOT="$PWD/workspaces/swe-bench" \
+MYCODER_DEEPSEEK_THINKING=disabled \
+python -m uvicorn api.server:app --host 127.0.0.1 --port 8000
+
+# In another terminal, use the same thinking setting so the manifest matches.
+MYCODER_DEEPSEEK_THINKING=disabled python -m eval_bench.smoke \
+  --max-tokens 35000 --soft-budget-tokens 20000 \
+  --results results/swe-bench/smoke \
+  --thinking disabled
+```
+
+The smoke preset uses `execution-mode=single` and `react` to isolate the
+provider/tool/API path. Benchmark requests enforce both a repository mutation
+and a successful `execute_in_sandbox` verification command before the API
+records success, so an untested or failing diff cannot be reported as a
+completed agent run. Pass `--execution-mode multi` only when you explicitly
+want to test orchestration as well.
+
+For a completed generation run, reuse the result directory for official
+grading without calling the model again:
+
+```bash
+MYCODER_DEEPSEEK_THINKING=disabled python -m eval_bench.smoke \
+  --resume --evaluate --results results/swe-bench/smoke
+```
+
+Add `--evaluate` only after a non-empty patch is present and the official
+SWE-bench package/Docker images are available.
+
+1. **Start the API server with a dedicated evaluation root.** Never run the
+   benchmark against the API's default project-root workspace: that would let
+   the agent read `dataset.json` and its hidden verifier.
 
    ```bash
+  export MYCODER_WORKSPACE_ROOT="$PWD/workspaces/eval-api"
+  export MYCODER_REQUIRE_AUTH=false
+  mkdir -p "$MYCODER_WORKSPACE_ROOT/local"
    export OPENAI_API_KEY=sk-...
    uvicorn api.server:app --port 8000
    ```
+
+   With authentication enabled, replace the `local` directory below with the
+   authenticated tenant id. The runner creates one opaque API workspace per
+   task under that directory, so concurrent and repeated cases cannot share
+   files.
 
 2. **Run the benchmark** (in another terminal, same repo root):
 
@@ -64,9 +113,10 @@ know automatically which side is true.
    python -m eval_bench.runner --base-url http://localhost:8000 --parallel 3
    ```
 
-   The runner writes each problem's context files to `eval_bench/workspace/{id}/`
-   and instructs the agent to edit those files. After the agent finishes, the
-   runner reads the files back and runs the problem's pytest verification.
+   The default runner workspace is `workspaces/eval-api/local`, matching the
+   unauthenticated local setup above. After the agent finishes, the runner
+   copies only declared output files to a fresh temporary verifier directory.
+   It does not execute pytest in the agent-controlled directory.
 
 3. **Score the run:**
 
@@ -95,9 +145,13 @@ know automatically which side is true.
 runner.py
   --base-url URL     MyCoder API base (default http://localhost:8000)
   --dataset PATH     dataset.json (default eval_bench/dataset.json)
-  --workspace PATH   workspace dir (default eval_bench/workspace)
+  --workspace PATH   parent of isolated per-task roots
+                     (default workspaces/eval-api/local)
+  --workspace-id ID  prefix for unique per-task API workspace ids
+                     (default bench; this is not the API default workspace)
   --results DIR      output dir (default results/<timestamp>)
   --parallel N       concurrent problems (default 3)
+  --ids ID [ID ...]  run only the listed problem ids (selection is frozen)
   --resume           skip problems already in --results/raw_results.json
   --dry-run          validate the dataset schema and exit
   --execution-mode   single | multi
@@ -129,12 +183,18 @@ results/<timestamp>/
 * `error_class` on failures comes from the real envelope error codes
   (`CIRCUIT_BREAKER_OPEN`, `SUBAGENT_TIMEOUT`, `TOKEN_BUDGET_EXCEEDED`,
   `SUBAGENT_ERROR`, …) plus runner-side classes `RUN_REJECTED`, `TIMEOUT`,
-  `VERIFICATION_FAILED`, `VERIFICATION_TIMEOUT`, `AGENT_FAILED`, `RUNNER_ERROR`.
+  `VERIFICATION_FAILED`, `VERIFICATION_INTEGRITY`, `VERIFICATION_TIMEOUT`,
+  `AGENT_FAILED`, `RUNNER_ERROR`.
 
 ## Notes
 
-* **Zero-intrusion:** nothing in `mycoder/` or `api/` is modified or imported
-  by the harness; it talks to the agent only over HTTP.
+* **Benchmark isolation:** every case gets a clean API-scoped filesystem root
+  containing only public task inputs. The source dataset, hidden tests,
+  runner, and scorer remain outside the agent's file-tool authority.
+* **Verifier integrity:** only declared outputs are copied to a fresh temporary
+  directory; pytest configuration/plugin environment variables are cleared,
+  plugin autoload is disabled, and a pass requires exit code 0 plus the exact
+  expected number of collected and passing tests.
 * **Determinism:** the API uses `temperature=0` by default, so a fixed dataset
   + fixed server should give reproducible passes. If you pass `--resume`, rerun
   results for completed problems are not overwritten (idempotent continuation).

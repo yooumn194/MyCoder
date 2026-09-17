@@ -988,25 +988,27 @@ def report():
         "verification": {
             "type": "unit_test",
             "test_code": """\
+import fetch as fetch_module
+import metrics
 from cache import Cache
-from fetch import fetch
-from metrics import report
 
 
-def test_fetch_uses_extracted_cache(monkeypatch):
+def test_fetch_uses_extracted_cache_and_metrics(monkeypatch):
     calls = []
+    original_set = Cache.set
 
     def counting_set(self, key, value):
         calls.append(key)
-        Cache.set(self, key, value)
+        return original_set(self, key, value)
 
+    # Keep the original method before patching; calling Cache.set after the
+    # patch would recursively invoke counting_set and invalidate the test.
     monkeypatch.setattr(Cache, "set", counting_set)
-    assert fetch("http://a") == "data:http://a"
-    assert fetch("http://a") == "data:http://a"  # served from cache
+    assert fetch_module.fetch("http://a") == "data:http://a"
+    assert fetch_module.fetch("http://a") == "data:http://a"  # served from cache
     assert calls == ["http://a"]  # set called exactly once
-
-def test_report_works():
-    assert report() == {"hits": 2}
+    assert fetch_module.hit_count() == 1  # one unique cached URL
+    assert metrics.report() == {"hits": 1}
 """,
             "pass_criteria": "all_tests_pass",
         },

@@ -1,0 +1,3 @@
+{
+  "*": "bash -lc 'if [ -x /opt/miniconda3/envs/testbed/bin/python ]; then PY=/opt/miniconda3/envs/testbed/bin/python; else PY=python; fi; if \"$PY\" -c \"import pytest\" >/dev/null 2>&1; then exec \"$PY\" -m pytest -q -x --no-header -p no:cacheprovider; fi; NATIVE=\"\"; for runner in tests/runtests.py bin/test run_tests.py; do if [ -f \"$runner\" ]; then NATIVE=\"$NATIVE $runner\"; fi; done; echo \"MYCODER_VERIFY_UNAVAILABLE: no importable test runner in this image; native runner(s) present:$NATIVE\" >&2; exit 127'"
+}

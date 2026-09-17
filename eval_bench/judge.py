@@ -58,6 +58,16 @@ class LLMJudge:
     def __init__(self, llm=None) -> None:
         self._llm = llm if llm is not None else _resolve_llm()
 
+    @property
+    def available(self) -> bool:
+        """Whether a judge LLM is configured at all.
+
+        Callers report this instead of letting a neutral 0.5 pass for a score:
+        "no judge" and "the judge was unimpressed" are different facts, and the
+        eval report has to be able to say which one it is.
+        """
+        return self._llm is not None
+
     def judge(
         self, question: str, answer: str, reference: str | None = None
     ) -> dict[str, Any]:

@@ -480,7 +480,7 @@
     },
     "verification": {
       "type": "unit_test",
-      "test_code": "from cache import Cache\nfrom fetch import fetch\nfrom metrics import report\n\n\ndef test_fetch_uses_extracted_cache(monkeypatch):\n    calls = []\n\n    def counting_set(self, key, value):\n        calls.append(key)\n        Cache.set(self, key, value)\n\n    monkeypatch.setattr(Cache, \"set\", counting_set)\n    assert fetch(\"http://a\") == \"data:http://a\"\n    assert fetch(\"http://a\") == \"data:http://a\"  # served from cache\n    assert calls == [\"http://a\"]  # set called exactly once\n\ndef test_report_works():\n    assert report() == {\"hits\": 2}\n",
+      "test_code": "import fetch as fetch_module\nimport metrics\nfrom cache import Cache\n\n\ndef test_fetch_uses_extracted_cache_and_metrics(monkeypatch):\n    calls = []\n    original_set = Cache.set\n\n    def counting_set(self, key, value):\n        calls.append(key)\n        return original_set(self, key, value)\n\n    # Keep the original method before patching; calling Cache.set after the\n    # patch would recursively invoke counting_set and invalidate the test.\n    monkeypatch.setattr(Cache, \"set\", counting_set)\n    assert fetch_module.fetch(\"http://a\") == \"data:http://a\"\n    assert fetch_module.fetch(\"http://a\") == \"data:http://a\"  # served from cache\n    assert calls == [\"http://a\"]  # set called exactly once\n    assert fetch_module.hit_count() == 1  # one unique cached URL\n    assert metrics.report() == {\"hits\": 1}\n",
       "pass_criteria": "all_tests_pass"
     },
     "timeout_seconds": 180,

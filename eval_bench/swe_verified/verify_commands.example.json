@@ -1,0 +1,4 @@
+{
+  "*": "python -m pytest -x -q",
+  "owner__repo-1234": "python -m pytest -x -q tests/test_<module>.py"
+}

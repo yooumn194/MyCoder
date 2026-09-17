@@ -72,9 +72,15 @@ def aggregate(plan: list[dict]) -> dict:
     for run in plan:
         path = Path(run["results"]) / "raw_results.json"
         if path.exists():
-            grouped.setdefault(run["variant"], []).append(
-                json.loads(path.read_text(encoding="utf-8"))
-            )
+            records = json.loads(path.read_text(encoding="utf-8"))
+            unverified = [
+                record.get("id", "<unknown>")
+                for record in records
+                if record.get("benchmark_integrity_version") != runner.BENCHMARK_INTEGRITY_VERSION
+            ]
+            if unverified:
+                raise ValueError(f"legacy or unverified matrix records: {unverified}")
+            grouped.setdefault(run["variant"], []).append(records)
     summary: dict[str, dict] = {}
     for variant, repetitions in grouped.items():
         records = [record for repetition in repetitions for record in repetition]
@@ -113,8 +119,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m eval_bench.matrix", description=__doc__)
     parser.add_argument("--base-url", default="http://localhost:8000")
     parser.add_argument("--dataset", default=str(Path(__file__).parent / "dataset.json"))
-    parser.add_argument("--workspace", default=str(Path(__file__).parent / "workspace"))
-    parser.add_argument("--workspace-id", default="default")
+    parser.add_argument(
+        "--workspace",
+        default="workspaces/eval-api/local",
+        help="host directory containing per-task API workspace roots",
+    )
+    parser.add_argument("--workspace-id", default="bench", help="per-task API workspace id prefix")
     parser.add_argument("--results", default=None)
     parser.add_argument("--parallel", type=int, default=3)
     parser.add_argument("--repeats", type=int, default=3)
@@ -141,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
     model_config = Config.from_env()
     manifest = {
         "schema_version": 1,
+        "benchmark_integrity_version": runner.BENCHMARK_INTEGRITY_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "dataset": str(dataset_path),
         "dataset_sha256": hashlib.sha256(dataset_path.read_bytes()).hexdigest(),
@@ -148,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
         "repeats": args.repeats,
         "planned_api_runs": len(data) * len(plan),
         "base_url": args.base_url,
-        "workspace_id": args.workspace_id,
+        "workspace_id_prefix": args.workspace_id,
         "provider": model_config.provider,
         "model": model_config.model,
         "temperature": model_config.temperature,

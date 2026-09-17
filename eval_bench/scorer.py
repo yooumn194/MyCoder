@@ -26,9 +26,61 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .runner import BENCHMARK_INTEGRITY_VERSION
+
 
 def load_results(path: Path) -> list[dict]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def validate_result_integrity(results_dir: Path, results: list[dict]) -> tuple[dict | None, list[str]]:
+    """Require the runner's frozen contract and integrity marker."""
+    errors: list[str] = []
+    manifest_path = results_dir / "manifest.json"
+    if not manifest_path.exists():
+        return None, ["missing integrity manifest"]
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, [f"invalid integrity manifest: {exc}"]
+    contract = manifest.get("contract")
+    if not isinstance(contract, dict):
+        errors.append("manifest.contract is missing")
+        contract = {}
+    if contract.get("benchmark_integrity_version") != BENCHMARK_INTEGRITY_VERSION:
+        errors.append("manifest was not produced by the integrity-v2 runner")
+    bad_records = [
+        str(result.get("id", "<unknown>"))
+        for result in results
+        if result.get("benchmark_integrity_version") != BENCHMARK_INTEGRITY_VERSION
+    ]
+    if bad_records:
+        errors.append(f"legacy or unverified result records: {', '.join(bad_records)}")
+    ids = [result.get("id") for result in results]
+    if len(ids) != len(set(ids)):
+        errors.append("duplicate result ids")
+    if contract.get("task_count") != len(results):
+        errors.append(f"result count {len(results)} does not match manifest task_count {contract.get('task_count')}")
+    return manifest, errors
+
+
+def validate_comparable_results(base_results: list[dict], treat_results: list[dict]) -> list[str]:
+    """Require paired case identity and labels before computing a delta."""
+    errors: list[str] = []
+    base = {result.get("id"): result for result in base_results}
+    treat = {result.get("id"): result for result in treat_results}
+    if len(base) != len(base_results) or len(treat) != len(treat_results):
+        errors.append("comparison inputs contain duplicate ids")
+    if set(base) != set(treat):
+        missing = sorted(str(item) for item in set(base) - set(treat))
+        extra = sorted(str(item) for item in set(treat) - set(base))
+        errors.append(f"comparison case ids differ (missing={missing}, extra={extra})")
+        return errors
+    for qid in sorted(base, key=str):
+        for field in ("category", "difficulty"):
+            if base[qid].get(field) != treat[qid].get(field):
+                errors.append(f"{qid}: comparison {field} differs")
+    return errors
 
 
 def is_pass(r: dict) -> bool:
@@ -123,6 +175,52 @@ def _perf_stats(results: list[dict]) -> dict:
         "p95_latency_ms": _p95("p95_latency_ms"),
         "avg_tokens_per_task": round(tokens / n, 1) if n else 0.0,
         "cost_per_task": round(cost / n, 4) if n else 0.0,
+    }
+
+
+def quality_scores(results: list[dict], judge=None) -> dict:
+    """Second axis: LLM-as-Judge over the answers the runner recorded.
+
+    Pass@1 answers "did the tests pass"; it cannot distinguish a partially
+    correct or well-reasoned answer from a wrong one. This adds that dimension
+    *beside* it, never in place of it — and when no judge LLM is configured the
+    section says so (`judge_available: false`) instead of publishing a neutral
+    0.5 that would look like a measured result. Failures inside a judge call
+    are already swallowed by `LLMJudge` itself, so this cannot break a run.
+    """
+    from .judge import LLMJudge
+
+    judge = judge or LLMJudge()
+    judgeable = [
+        r
+        for r in results
+        if str(r.get("answer") or "").strip() and str(r.get("question") or "").strip()
+    ]
+    per_case = []
+    if judge.available:
+        for result in judgeable:
+            verdict = judge.judge(str(result["question"]), str(result["answer"]))
+            per_case.append(
+                {
+                    "id": result.get("id"),
+                    "score": verdict["score"],
+                    "reasoning": verdict["reasoning"],
+                }
+            )
+    scores = [case["score"] for case in per_case]
+    return {
+        "judge_available": judge.available,
+        "judged": len(per_case),
+        # Cases with no recorded answer (or no question) — reported so a low
+        # coverage number is visible rather than silently averaged away.
+        "unjudged": len(results) - len(judgeable),
+        "avg_score": round(sum(scores) / len(scores), 4) if scores else 0.0,
+        "distribution": {
+            str(level): sum(1 for score in scores if score == level)
+            for level in (0.0, 0.5, 1.0)
+        },
+        "low_score_cases": [case for case in per_case if case["score"] == 0.0],
+        "per_case": per_case,
     }
 
 
@@ -283,6 +381,30 @@ def render_markdown(stats: dict, results: list[dict], env: dict) -> str:
         ))
         lines.append("")
 
+    quality = stats.get("quality")
+    if quality:
+        lines.append("## Answer quality (LLM-as-Judge)")
+        if not quality["judge_available"]:
+            lines.append(
+                "_No judge LLM configured (no API key) — the quality dimension was "
+                "not measured. Set an API key and re-run with `--judge`._"
+            )
+        else:
+            lines.append(f"- **Judged:** {quality['judged']}  ·  **unjudged:** {quality['unjudged']}")
+            lines.append(f"- **Average score:** {quality['avg_score']}")
+            lines.append(_table(
+                ["score", "count"],
+                [[level, str(count)] for level, count in quality["distribution"].items()],
+            ))
+            if quality["low_score_cases"]:
+                lines.append("")
+                lines.append("Low-scoring answers (candidates for badcase 回流):")
+                lines.append(_table(
+                    ["id", "reasoning"],
+                    [[c["id"], c["reasoning"][:60]] for c in quality["low_score_cases"]],
+                ))
+        lines.append("")
+
     failed = [r for r in results if not is_pass(r)]
     lines.append("## Failed cases")
     if failed:
@@ -348,6 +470,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--chart", action="store_true", help="also render chart.png (needs matplotlib)")
     parser.add_argument("--base-url", default="", help="API base URL recorded in the report")
     parser.add_argument("--badcases", default=None, help="badcase 回流 output path (default <results>/badcases.json)")
+    parser.add_argument(
+        "--judge",
+        action="store_true",
+        help=(
+            "also score answer quality with LLM-as-Judge (one LLM call per case; "
+            "reported as a separate dimension and never folded into Pass@1)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.compare:
@@ -356,7 +486,24 @@ def main(argv: list[str] | None = None) -> int:
         if not base_raw.exists() or not treat_raw.exists():
             print("[scorer] --compare needs raw_results.json in both dirs")
             return 1
-        cmp = compute_comparison(load_results(base_raw), load_results(treat_raw))
+        base_results = load_results(base_raw)
+        treat_results = load_results(treat_raw)
+        base_manifest, base_errors = validate_result_integrity(base_dir, base_results)
+        treat_manifest, treat_errors = validate_result_integrity(treat_dir, treat_results)
+        integrity_errors = [f"baseline: {error}" for error in base_errors]
+        integrity_errors.extend(f"treatment: {error}" for error in treat_errors)
+        if base_manifest and treat_manifest:
+            base_contract = base_manifest["contract"]
+            treat_contract = treat_manifest["contract"]
+            for field in ("dataset_sha256", "task_count"):
+                if base_contract.get(field) != treat_contract.get(field):
+                    integrity_errors.append(f"comparison manifest {field} differs")
+        integrity_errors.extend(validate_comparable_results(base_results, treat_results))
+        if integrity_errors:
+            for error in integrity_errors:
+                print(f"[integrity] {error}")
+            return 1
+        cmp = compute_comparison(base_results, treat_results)
         (treat_dir / "comparison.json").write_text(
             json.dumps(cmp, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -379,13 +526,31 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[scorer] no raw_results.json in {results_dir}")
         return 1
     results = load_results(raw)
+    manifest, integrity_errors = validate_result_integrity(results_dir, results)
+    if integrity_errors:
+        for error in integrity_errors:
+            print(f"[integrity] {error}")
+        return 1
     stats = compute_stats(results)
+    if args.judge:
+        # Second axis, computed only on request: it costs one LLM call per case,
+        # and it must never change the objective numbers next to it.
+        stats["quality"] = quality_scores(results)
+        quality = stats["quality"]
+        if quality["judge_available"]:
+            print(
+                f"[scorer] quality: avg={quality['avg_score']} "
+                f"judged={quality['judged']} unjudged={quality['unjudged']}"
+            )
+        else:
+            print("[scorer] quality: no judge LLM configured — dimension not measured")
+    contract = manifest["contract"]
 
     env = {
         "python": platform.python_version(),
         "os": platform.system(),
-        "base_url": args.base_url or "(not recorded)",
-        "dataset": "eval_bench/dataset.json",
+        "base_url": args.base_url or contract.get("base_url", "(not recorded)"),
+        "dataset": contract.get("dataset", "(not recorded)"),
     }
     (results_dir / "summary.json").write_text(json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8")
     (results_dir / "report.md").write_text(render_markdown(stats, results, env), encoding="utf-8")

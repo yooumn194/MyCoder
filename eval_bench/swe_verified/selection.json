@@ -1,0 +1,192 @@
+{
+  "schema_version": 1,
+  "source": {
+    "dataset": "princeton-nlp/SWE-bench_Verified",
+    "split": "test",
+    "revision": "c104f840cc67f8b6eec6f759ebc8b2693d585d4a",
+    "parquet_path": "data/test-00000-of-00001.parquet",
+    "parquet_sha256": "a45b1fe4e2f0c8390b2b2938ac83e92ed5979000856808f3679c07812e9e6dcd",
+    "row_count": 500
+  },
+  "cases": [
+    {
+      "instance_id": "django__django-11133",
+      "category": "basic_skill",
+      "selection_reason": "A localized conversion bug with an explicit input and expected byte output."
+    },
+    {
+      "instance_id": "sympy__sympy-16886",
+      "category": "basic_skill",
+      "selection_reason": "A small, unambiguous mapping correction suitable for a basic edit-and-test path."
+    },
+    {
+      "instance_id": "pytest-dev__pytest-5262",
+      "category": "basic_skill",
+      "selection_reason": "A focused property-contract bug with a concrete reproduction and expected behavior."
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-24570",
+      "category": "basic_skill",
+      "selection_reason": "A bounded layout bug whose top/bottom behavior is directly observable."
+    },
+
+    {
+      "instance_id": "pylint-dev__pylint-4661",
+      "category": "knowledge_qa",
+      "selection_reason": "Requires grounding an implementation decision in the XDG directory contract and repository conventions."
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8459",
+      "category": "knowledge_qa",
+      "selection_reason": "Requires understanding how two Sphinx configuration options interact across the autodoc pipeline."
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-25232",
+      "category": "knowledge_qa",
+      "selection_reason": "Requires tracing and explaining the parameter contract shared by IterativeImputer and SimpleImputer."
+    },
+    {
+      "instance_id": "django__django-11239",
+      "category": "knowledge_qa",
+      "selection_reason": "Requires repository-grounded knowledge of PostgreSQL SSL option mapping in dbshell."
+    },
+
+    {
+      "instance_id": "astropy__astropy-12907",
+      "category": "multi_turn",
+      "variant": "two_turn",
+      "selection_reason": "The nested-model reproduction supports a two-turn diagnose-then-implement exchange."
+    },
+    {
+      "instance_id": "pytest-dev__pytest-10051",
+      "category": "multi_turn",
+      "variant": "three_turn",
+      "selection_reason": "The aliasing explanation and reproduction allow diagnosis, constraint recall, and implementation to be separated."
+    },
+    {
+      "instance_id": "pydata__xarray-3305",
+      "category": "multi_turn",
+      "variant": "four_turn",
+      "selection_reason": "The keep_attrs contract is compact enough to isolate cross-turn retention from coding difficulty."
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-24627",
+      "category": "multi_turn",
+      "variant": "five_turn",
+      "selection_reason": "The clear/remove lifecycle invariant can be revisited over five turns without changing the target fix."
+    },
+
+    {
+      "instance_id": "django__django-10973",
+      "category": "tool_calling",
+      "selection_reason": "The backend process-launch change rewards targeted search, file inspection, editing, and focused tests."
+    },
+    {
+      "instance_id": "pytest-dev__pytest-5840",
+      "category": "tool_calling",
+      "selection_reason": "A platform-sensitive collection regression requires efficient navigation and test selection."
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-7985",
+      "category": "tool_calling",
+      "selection_reason": "The linkcheck builder task requires following references across implementation and tests."
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-26323",
+      "category": "tool_calling",
+      "selection_reason": "The composed estimator path exercises search, call-chain inspection, patching, and regression testing."
+    },
+
+    {
+      "instance_id": "django__django-16256",
+      "category": "multi_intent",
+      "selection_reason": "Contains three async operations across two related-manager directions, yielding six explicit obligations."
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-25775",
+      "category": "multi_intent",
+      "selection_reason": "Combines getter, setter, Annotation compatibility, drawing-state propagation, and backend behavior."
+    },
+    {
+      "instance_id": "sympy__sympy-22914",
+      "category": "multi_intent",
+      "selection_reason": "Requires complete support for both Min and Max rather than satisfying only one symmetric branch."
+    },
+    {
+      "instance_id": "pylint-dev__pylint-6528",
+      "category": "multi_intent",
+      "selection_reason": "Requires recursive mode to honor ignore, ignore-paths, ignore-patterns, and the default hidden-file rule."
+    },
+
+    {
+      "instance_id": "astropy__astropy-13977",
+      "category": "ambiguous_intent",
+      "selection_reason": "The issue is framed as a question and requires resolving dispatch semantics from code, tests, and NumPy conventions."
+    },
+    {
+      "instance_id": "astropy__astropy-13236",
+      "category": "ambiguous_intent",
+      "selection_reason": "The proposal says 'consider' and includes staged deprecation behavior that must be inferred precisely."
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-24870",
+      "category": "ambiguous_intent",
+      "selection_reason": "The enhancement is phrased as a tentative API question with an implied but not fully specified default."
+    },
+    {
+      "instance_id": "sympy__sympy-19495",
+      "category": "ambiguous_intent",
+      "selection_reason": "The reporter explicitly questions whether behavior is wrong, so the agent must establish the intended substitution contract."
+    },
+
+    {
+      "instance_id": "django__django-10097",
+      "category": "abnormal_input",
+      "variant": "empty_then_recover",
+      "selection_reason": "An invalid-URL issue is paired with an empty first turn to test rejection and same-session recovery."
+    },
+    {
+      "instance_id": "psf__requests-5414",
+      "category": "abnormal_input",
+      "variant": "noise_prefix",
+      "selection_reason": "A malformed-host bug is wrapped in irrelevant Unicode noise while retaining an exact target behavior."
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-7462",
+      "category": "abnormal_input",
+      "variant": "delimiter_stress",
+      "selection_reason": "An empty-tuple edge case is wrapped in delimiter-heavy text to exercise robust prompt parsing."
+    },
+    {
+      "instance_id": "sympy__sympy-15809",
+      "category": "abnormal_input",
+      "variant": "prompt_injection",
+      "selection_reason": "A zero-argument edge case is combined with a harmless simulated destructive instruction that must be ignored."
+    },
+
+    {
+      "instance_id": "django__django-14053",
+      "category": "long_dialogue_decay",
+      "variant": "history_probes_2_3_5",
+      "selection_reason": "The duplicate-yield constraints provide several facts that can be probed after intervening turns."
+    },
+    {
+      "instance_id": "pydata__xarray-6938",
+      "category": "long_dialogue_decay",
+      "variant": "history_probes_2_3_5",
+      "selection_reason": "The non-mutation invariant is easy to lose during a longer repository discussion."
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-25960",
+      "category": "long_dialogue_decay",
+      "variant": "history_probes_2_3_5",
+      "selection_reason": "Both spacing parameters and subfigure scope must survive the full dialogue."
+    },
+    {
+      "instance_id": "sympy__sympy-23824",
+      "category": "long_dialogue_decay",
+      "variant": "history_probes_2_3_5",
+      "selection_reason": "The leading-matrix order invariant is specific, testable, and vulnerable to context dilution."
+    }
+  ]
+}
