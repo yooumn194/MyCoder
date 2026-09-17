@@ -25,3 +25,10 @@ workspaces/
 # The three documentation files already tracked under docs/ remain tracked;
 # this rule prevents new private material from being added accidentally.
 docs/
+# Local agent working memory — personal notes, same policy as docs/ above.
+.workbuddy/
+# Runtime logs: the official SWE-bench harness writes logs/run_evaluation/ here.
+logs/
+# Harness reports are written to the CWD as <run>.mycoder-<hash>.json. Pinned to
+# the repository root so a same-named file under a package is never hidden.
+/*.mycoder-*.json
