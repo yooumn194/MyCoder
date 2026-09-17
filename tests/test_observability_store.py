@@ -9,6 +9,7 @@ from mycoder.observability.store import (
     SQLiteObservabilityStore,
 )
 from mycoder.observability.trace import LLMTracer
+from mycoder.observability.tool_trace import ToolTracer
 
 
 class _Log:
@@ -42,6 +43,42 @@ def test_trace_and_cost_survive_tracer_reconstruction(tmp_path):
     assert reader.list_sessions() == ["session-a"]
 
 
+def test_tool_trace_survives_reconstruction_and_stays_out_of_llm_metrics(tmp_path):
+    path = tmp_path / "api_state.db"
+    writer = ToolTracer(store=SQLiteObservabilityStore(path))
+    writer.record(
+        "session-tools",
+        "call-1",
+        "edit_file",
+        {"file_path": "app.py", "api_key": "sk-secret"},
+        "Edited app.py",
+        status="success",
+        duration_ms=12.5,
+        retry_count=1,
+        mutation=True,
+        subagent_name="implementer",
+    )
+    writer.record_requirement_feedback(
+        "session-tools",
+        "mutation required",
+        attempt=1,
+        phase="mutate",
+        subagent_name="implementer",
+    )
+
+    reader = ToolTracer(store=SQLiteObservabilityStore(path))
+    summary = reader.get_session_summary("session-tools")
+    traces = reader.list_traces("session-tools")
+
+    assert summary["calls"] == 1
+    assert summary["mutations"] == 1
+    assert summary["retries"] == 1
+    assert summary["requirement_misses"] == 1
+    assert traces[0]["arguments"]["api_key"] == "[REDACTED]"
+    assert "sk-secret" not in str(traces)
+    assert LLMTracer(store=SQLiteObservabilityStore(path)).get_session_summary("session-tools")["total_calls"] == 0
+
+
 def test_monitor_report_can_aggregate_only_tenant_allowed_traces(tmp_path):
     from mycoder.observability.report import build_monitor_report
 
@@ -63,6 +100,30 @@ def test_monitor_report_can_aggregate_only_tenant_allowed_traces(tmp_path):
     assert set(report["per_session"]) == {"tenant-a-session"}
 
 
+def test_monitor_report_aggregates_tool_only_sessions(tmp_path):
+    from mycoder.observability.report import build_monitor_report
+
+    store = SQLiteObservabilityStore(tmp_path / "api_state.db")
+    llm_tracer = LLMTracer(store=store)
+    tool_tracer = ToolTracer(store=store)
+    tool_tracer.record(
+        "tool-only",
+        "call-1",
+        "edit_file",
+        {},
+        "Edited app.py",
+        status="success",
+        mutation=True,
+    )
+
+    report = build_monitor_report(llm_tracer, tool_tracer=tool_tracer)
+
+    assert report["llm"]["calls"] == 0
+    assert report["tools"]["calls"] == 1
+    assert report["tools"]["mutations"] == 1
+    assert report["per_session"]["tool-only"]["tools"]["calls"] == 1
+
+
 def test_rate_limit_is_shared_across_store_instances(tmp_path):
     path = tmp_path / "api_state.db"
     first = RateLimiter(1, store=SQLiteObservabilityStore(path))
@@ -75,9 +136,7 @@ def test_rate_limit_is_shared_across_store_instances(tmp_path):
 
 def test_rate_limit_admission_is_atomic_across_threads(tmp_path):
     path = tmp_path / "api_state.db"
-    limiters = [
-        RateLimiter(3, store=SQLiteObservabilityStore(path)) for _ in range(12)
-    ]
+    limiters = [RateLimiter(3, store=SQLiteObservabilityStore(path)) for _ in range(12)]
     with ThreadPoolExecutor(max_workers=12) as pool:
         decisions = list(pool.map(lambda limiter: limiter.allow("shared"), limiters))
 
@@ -89,12 +148,8 @@ def test_alert_cooldown_and_history_survive_manager_reconstruction(tmp_path):
     rule = AlertRule("low_success", "success_rate", 0.9, op="<", cooldown_seconds=60)
     first_log = _Log()
     second_log = _Log()
-    first = AlertManager(
-        rules=[rule], log=first_log, store=SQLiteObservabilityStore(path)
-    )
-    second = AlertManager(
-        rules=[rule], log=second_log, store=SQLiteObservabilityStore(path)
-    )
+    first = AlertManager(rules=[rule], log=first_log, store=SQLiteObservabilityStore(path))
+    second = AlertManager(rules=[rule], log=second_log, store=SQLiteObservabilityStore(path))
 
     assert len(first.evaluate("session-a", {"success_rate": 0.5})) == 1
     assert second.evaluate("session-a", {"success_rate": 0.4}) == []
@@ -121,18 +176,14 @@ def test_sqlite_retention_prunes_expired_traces(tmp_path):
         "duration_ms": 1.0,
         "status": "success",
     }
-    store.append_trace(
-        {**base, "call_id": "expired", "timestamp": time.time() - 61}
-    )
+    store.append_trace({**base, "call_id": "expired", "timestamp": time.time() - 61})
     store.append_trace({**base, "call_id": "current", "timestamp": time.time()})
 
     assert [trace["call_id"] for trace in store.list_traces()] == ["current"]
 
 
 def test_sqlite_alert_history_is_bounded(tmp_path):
-    store = SQLiteObservabilityStore(
-        tmp_path / "api_state.db", ttl_seconds=60, max_alerts=1
-    )
+    store = SQLiteObservabilityStore(tmp_path / "api_state.db", ttl_seconds=60, max_alerts=1)
     first = {
         "session_id": "session-a",
         "rule": "latency",

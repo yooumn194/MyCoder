@@ -58,9 +58,7 @@ def _install_fake_litellm(stream_contents=None):
     fake = builtin_types.ModuleType("litellm")
     if stream_contents is None:
         stream_contents = ["hello", " world"]
-    fake.completion = mock.MagicMock(
-        return_value=_make_stream(stream_contents)
-    )
+    fake.completion = mock.MagicMock(return_value=_make_stream(stream_contents))
     sys.modules["litellm"] = fake
     return fake
 
@@ -197,6 +195,16 @@ class TestChat:
         call_kwargs = self.fake.completion.call_args[1]
         assert call_kwargs["stream_options"] == {"include_usage": True}
 
+    def test_required_tool_choice_is_forwarded(self):
+        llm = LiteLLM(model="openai/gpt-4o")
+        llm.chat(
+            messages=[{"role": "user", "content": "edit"}],
+            tools=[{"type": "function", "function": {"name": "edit_file"}}],
+            tool_choice="required",
+        )
+        call_kwargs = self.fake.completion.call_args[1]
+        assert call_kwargs["tool_choice"] == "required"
+
 
 # ---------------------------------------------------------------------------
 # Config integration
@@ -215,6 +223,7 @@ class TestConfigProvider:
 
     def test_cli_picks_litellm_class(self):
         from mycoder.llm import LiteLLM
+
         config = Config(provider="litellm", model="anthropic/claude-3-haiku", api_key="k")
         llm_cls = LiteLLM if config.provider == "litellm" else LLM
         assert llm_cls is LiteLLM

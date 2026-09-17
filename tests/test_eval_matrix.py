@@ -2,6 +2,7 @@ import json
 
 from eval_bench._gen_dataset import build as build_dataset
 from eval_bench.matrix import VARIANTS, aggregate, build_plan
+from eval_bench.runner import BENCHMARK_INTEGRITY_VERSION
 
 
 def test_ablation_plan_is_30_by_3_for_every_variant(tmp_path):
@@ -18,12 +19,40 @@ def test_ablation_aggregate_reports_repeat_variance_and_failures(tmp_path):
         variants={"single_react": VARIANTS["single_react"]},
     )
     first = [
-        {"agent_status": "success", "error_class": None, "duration_s": 1, "token_usage": 10},
-        {"agent_status": "failed", "error_class": "TIMEOUT", "duration_s": 3, "token_usage": 30},
+        {
+            "id": "a",
+            "agent_status": "success",
+            "error_class": None,
+            "duration_s": 1,
+            "token_usage": 10,
+            "benchmark_integrity_version": BENCHMARK_INTEGRITY_VERSION,
+        },
+        {
+            "id": "b",
+            "agent_status": "failed",
+            "error_class": "TIMEOUT",
+            "duration_s": 3,
+            "token_usage": 30,
+            "benchmark_integrity_version": BENCHMARK_INTEGRITY_VERSION,
+        },
     ]
     second = [
-        {"agent_status": "success", "error_class": None, "duration_s": 2, "token_usage": 20},
-        {"agent_status": "success", "error_class": None, "duration_s": 2, "token_usage": 20},
+        {
+            "id": "a",
+            "agent_status": "success",
+            "error_class": None,
+            "duration_s": 2,
+            "token_usage": 20,
+            "benchmark_integrity_version": BENCHMARK_INTEGRITY_VERSION,
+        },
+        {
+            "id": "b",
+            "agent_status": "success",
+            "error_class": None,
+            "duration_s": 2,
+            "token_usage": 20,
+            "benchmark_integrity_version": BENCHMARK_INTEGRITY_VERSION,
+        },
     ]
     for item, records in zip(plan, (first, second)):
         item["results"].mkdir(parents=True)

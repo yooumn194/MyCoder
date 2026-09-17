@@ -116,6 +116,15 @@ routing_rules: []
     ]
 
 
+def test_deepseek_profile_is_pinned_to_flash_for_every_tier():
+    router = ModelRouter()
+
+    for tier in ("fast", "standard", "powerful"):
+        assert router.resolve_candidates(tier, "deepseek", "deepseek-chat") == [
+            "deepseek-flash"
+        ]
+
+
 # ---------------------------------------------------------------------------
 # build_model_factory — model-tier routing wired into production
 # ---------------------------------------------------------------------------
@@ -198,6 +207,19 @@ def test_factory_none_base_is_noop():
 
     factory = build_model_factory(None)
     assert factory("fast") is None
+
+
+def test_factory_can_lock_every_tier_to_base_model(monkeypatch):
+    from mycoder.model_router import build_model_factory
+
+    base = _FakeLLM(model="deepseek-flash", api_key="key")
+    monkeypatch.setenv("MYCODER_LOCK_BASE_MODEL", "true")
+
+    factory = build_model_factory(base)
+
+    assert factory("fast") is base
+    assert factory("standard") is base
+    assert factory("powerful") is base
 
 
 def test_factory_builds_provider_local_fallback_chain(tmp_path):

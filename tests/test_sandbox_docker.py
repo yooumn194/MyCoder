@@ -11,6 +11,7 @@ teardown) — the properties that a regex blacklist could never provide.
 """
 
 import asyncio
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -24,6 +25,7 @@ from mycoder.sandbox import (
     SandboxResourceExhausted,
 )
 from mycoder.tools import get_tool
+from mycoder.tools.sandbox_tool import ExecuteInSandboxTool
 
 IMAGE = "mycoder-sandbox:3.12"
 
@@ -117,8 +119,8 @@ async def test_lazy_start_on_first_execute(tmp_path_factory):
         await sbx.stop()
 
 
-async def test_workspace_seeded_from_readonly_src(sandbox):
-    """The workspace is a git clone of the ro-mounted /src baseline."""
+async def test_workspace_is_the_host_checkout(sandbox):
+    """One filesystem: /workspace sees the host tree, including .git."""
     r = await sandbox.execute("cat tracked.txt")
     assert r.ok
     assert "line1" in r.stdout
@@ -140,7 +142,10 @@ async def test_rsync_available_in_sandbox(sandbox):
 async def test_runs_as_non_root_user(sandbox):
     r = await sandbox.execute("python3 -c 'import os; print(os.getuid())'")
     assert r.ok
-    assert r.stdout.strip() == "1000"  # the sandbox user
+    host_uid = getattr(os, "getuid", lambda: 1000)()
+    expected_uid = host_uid if host_uid > 0 and host_uid != 1000 else 1000
+    assert r.stdout.strip() == str(expected_uid)
+    assert expected_uid != 0
 
 
 async def test_root_fs_is_readonly(sandbox):
@@ -173,6 +178,69 @@ async def test_get_diff_returns_unified_diff(sandbox):
     d = await sandbox.get_diff()
     assert "diff --git" in d
     assert "+line2" in d
+
+
+async def test_benchmark_tool_rejects_untracked_shadow_in_real_docker(
+    tmp_path_factory,
+):
+    repo = Path(_make_repo(tmp_path_factory))
+    source = repo / "package" / "module.py"
+    source.parent.mkdir()
+    source.write_text(
+        "\n".join(f"def function_{index}(): return {index}" for index in range(250)),
+        encoding="utf-8",
+    )
+    _git(repo, ["add", "."])
+    _git(
+        repo,
+        ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "module"],
+    )
+    manager = SandboxManager(project_dir=repo, benchmark_mode=True)
+    tool = ExecuteInSandboxTool(manager)
+    try:
+        result = await asyncio.to_thread(
+            tool.execute, "cp package/module.py module.py"
+        )
+        diff = await manager.get_diff()
+    finally:
+        await manager.stop()
+
+    assert "unsafe benchmark patch" in result
+    assert "shadows repository file package/module.py" in result
+    assert "new file mode" in diff
+
+
+async def test_shell_edit_survives_host_read(tmp_path_factory):
+    """P0-1: a shell edit lands at its repository path, no copy involved."""
+    repo = Path(_make_repo(tmp_path_factory))
+    nested = repo / "package" / "module.py"
+    nested.parent.mkdir()
+    nested.write_text("before\n", encoding="utf-8")
+    _git(repo, ["add", "."])
+    _git(
+        repo,
+        ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "nested"],
+    )
+    sandbox = DockerSandbox(project_dir=repo)
+    await sandbox.start()
+    try:
+        result = await sandbox.execute("printf 'after\\n' >> package/module.py")
+        assert result.ok
+    finally:
+        await sandbox.stop()
+
+    assert nested.read_text(encoding="utf-8") == "before\nafter\n"
+    assert not (repo / "module.py").exists()
+
+
+async def test_get_diff_includes_untracked_files(sandbox):
+    await sandbox.execute("printf 'VALUE = 1\\n' > new_module.py")
+
+    diff = await sandbox.get_diff()
+
+    assert "diff --git" in diff
+    assert "new_module.py" in diff
+    assert "+VALUE = 1" in diff
 
 
 # --- destructive limits (own sandbox: must not poison the shared one) ------
@@ -212,15 +280,16 @@ async def test_pids_limit_stops_fork_bomb(tmp_path_factory):
 
 # --- P0-1: workspace view unification (end to end) -------------------------
 
-async def test_sandbox_exec_sync_then_host_read(tmp_path_factory):
-    """P0-1 acceptance: sandbox touch -> sync_workspace() -> host read_file sees it.
+async def test_shell_writes_are_immediately_visible_to_host_tools(tmp_path_factory):
+    """P0-1 acceptance: ONE filesystem, so there is nothing to synchronize.
 
-    Also proves execute_in_sandbox reports changed files instead of copying
-    them out, and that read_file maps /workspace/... onto the host dir.
+    A file created by `execute_in_sandbox` is readable by the host file tools
+    and present in `git status` in the very same round — the split-brain
+    "touch in the container, sync, then read on the host" dance is gone.
     """
     import mycoder.tools.sandbox_tool as st
 
-    repo = _make_repo(tmp_path_factory)
+    repo = Path(_make_repo(tmp_path_factory))
     manager = SandboxManager(
         project_dir=repo,
         policy=ConfirmPolicy(confirmer=lambda cmd, reason: "approved"),
@@ -229,27 +298,45 @@ async def test_sandbox_exec_sync_then_host_read(tmp_path_factory):
     try:
         tool = get_tool("execute_in_sandbox")
         r = tool.execute(command="echo hello > /workspace/hello.txt", timeout=30)
-        assert "[changed files:" in r  # changed_files reported, not copied
+        assert "[changed files:" in r  # reported, not copied
         assert "hello.txt" in r
 
-        # the host does NOT have the file yet
-        assert not (Path(repo) / "hello.txt").exists()
-
-        sync_tool = get_tool("sync_workspace")
-        out = sync_tool.execute(clean=False)
-        assert "hello.txt" in out
-        assert (Path(repo) / "hello.txt").read_text().strip() == "hello"
-
-        # read_file now maps /workspace/hello.txt onto the host copy
+        # no sync step: the host already sees it
+        assert (repo / "hello.txt").read_text().strip() == "hello"
         content = get_tool("read_file").execute(file_path="/workspace/hello.txt")
         assert "hello" in content
+
+        # ...and the edit is already in the repository diff
+        diff = await manager.get_diff()
+        assert "hello.txt" in diff
     finally:
         await manager.stop()
         st._manager = None
 
 
-async def test_execute_reports_changed_files_and_delete_hint(tmp_path_factory):
-    """A deletion-class command carries a clean=True hint in the output."""
+async def test_host_edit_is_immediately_visible_to_the_shell(tmp_path_factory):
+    """P0-1, the other direction: an edit_file write is seen by the next
+    command without any push into the container."""
+    import mycoder.tools.sandbox_tool as st
+
+    repo = Path(_make_repo(tmp_path_factory))
+    manager = SandboxManager(
+        project_dir=repo,
+        policy=ConfirmPolicy(confirmer=lambda cmd, reason: "approved"),
+    )
+    st._manager = manager
+    try:
+        (repo / "shared.txt").write_text("VALUE = 2\n", encoding="utf-8")
+        tool = get_tool("execute_in_sandbox")
+        r = tool.execute(command="cat /workspace/shared.txt", timeout=30)
+        assert "VALUE = 2" in r
+    finally:
+        await manager.stop()
+        st._manager = None
+
+
+async def test_execute_reports_deletion_in_the_shared_tree(tmp_path_factory):
+    """A deletion is already real on the host; the output says so."""
     import mycoder.tools.sandbox_tool as st
 
     repo = _make_repo(tmp_path_factory)
@@ -261,7 +348,8 @@ async def test_execute_reports_changed_files_and_delete_hint(tmp_path_factory):
     try:
         tool = get_tool("execute_in_sandbox")
         r = tool.execute(command="echo x > /workspace/del.txt && rm /workspace/del.txt", timeout=30)
-        assert "sync_workspace(clean=True)" in r  # deletion hint
+        assert "files deleted" in r
+        assert not (Path(repo) / "del.txt").exists()
     finally:
         await manager.stop()
         st._manager = None
@@ -269,24 +357,18 @@ async def test_execute_reports_changed_files_and_delete_hint(tmp_path_factory):
 
 # --- teardown --------------------------------------------------------------
 
-async def test_stop_removes_container_and_volume(tmp_path_factory):
+async def test_stop_removes_container(tmp_path_factory):
     import docker
 
     sbx = DockerSandbox(project_dir=_make_repo(tmp_path_factory))
     await sbx.start()
     cid = sbx._container.id
-    volume = sbx._volume_name
     await sbx.stop()
 
     client = docker.from_env()
     try:
         client.containers.get(cid)
         raise AssertionError("container still present after stop()")
-    except docker.errors.NotFound:
-        pass
-    try:
-        client.volumes.get(volume)
-        raise AssertionError("workspace volume still present after stop()")
     except docker.errors.NotFound:
         pass
     client.close()
@@ -316,10 +398,10 @@ async def test_idle_timeout_reaps_container_and_restarts(tmp_path_factory):
         assert sbx._container is None, "container was not reaped within 8s"
         assert sbx._started is False
 
-        # next execute restarts transparently on the same volume
+        # next execute restarts transparently over the same host tree
         r = await sbx.execute("cat /workspace/keep.txt")
         assert r.ok
         assert "keep-me" in r.stdout
-        assert sbx._container.id != first_cid  # a fresh container, same volume
+        assert sbx._container.id != first_cid  # fresh container, same files
     finally:
         await sbx.stop()

@@ -11,7 +11,6 @@ def test_tool_count():
     """The registry is the canonical tool set (bash -> execute_in_sandbox)."""
     assert {t.name for t in ALL_TOOLS} == {
         "execute_in_sandbox",
-        "sync_workspace",
         "grep_search",
         "list_files",
         "read_file",
@@ -158,6 +157,41 @@ def test_sandbox_truncates_long_output(local_sandbox_tool):
     assert "truncated" in r
 
 
+def test_benchmark_shell_command_surfaces_unsafe_patch_immediately():
+    from mycoder.sandbox import ConfirmPolicy, ExecutionResult
+    from mycoder.tools.sandbox_tool import ExecuteInSandboxTool
+
+    class _Manager:
+        benchmark_mode = True
+        project_dir = None
+        policy = ConfirmPolicy()
+
+        async def execute(self, command, timeout):
+            return ExecutionResult(exit_code=0, stdout="copied\n", stderr="")
+
+        async def get_diff(self):
+            added = "\n".join(f"+line {index}" for index in range(250))
+            return (
+                "diff --git a/crypto.py b/crypto.py\n"
+                "new file mode 100644\n"
+                "--- /dev/null\n"
+                "+++ b/crypto.py\n"
+                f"@@ -0,0 +1,250 @@\n{added}\n"
+                "diff --git a/src/crypto.py b/src/crypto.py\n"
+                "--- a/src/crypto.py\n"
+                "+++ b/src/crypto.py\n"
+                "@@ -1 +1 @@\n-old\n+new\n"
+            )
+
+        def get_sync(self):
+            return None
+
+    result = ExecuteInSandboxTool(_Manager()).execute("echo copied")
+
+    assert "unsafe benchmark patch" in result
+    assert "crypto.py" in result
+
+
 # --- read_file (Phase 2: project-rooted, 300-line cap, '42 | line' format) ---
 
 @pytest.fixture()
@@ -227,6 +261,59 @@ def test_write_file_creates_dirs(tmp_path):
     assert nested.read_text(encoding="utf-8") == "nested\n"
 
 
+def test_write_file_refuses_to_overwrite_existing_file(tmp_path):
+    write = get_tool("write_file")
+    path = tmp_path / "existing.py"
+    path.write_text("VALUE = 1\n", encoding="utf-8")
+
+    result = write.execute(file_path=str(path), content="VALUE = 2\n")
+
+    assert "refusing to overwrite" in result
+    assert path.read_text(encoding="utf-8") == "VALUE = 1\n"
+
+
+def test_write_file_refuses_large_shadow_copy(tmp_path):
+    from mycoder.tools.write import WriteFileTool
+
+    source = tmp_path / "package" / "module.py"
+    source.parent.mkdir()
+    content = "\n".join(
+        f"def function_{index}(): return {index}  # sufficiently unique content"
+        for index in range(180)
+    )
+    source.write_text(content, encoding="utf-8")
+    write = WriteFileTool(project_root=tmp_path)
+
+    result = write.execute(file_path="module.py", content=content + "\n# one edit\n")
+
+    assert "refusing likely shadow copy" in result
+    assert "package/module.py" in result
+    assert not (tmp_path / "module.py").exists()
+
+
+def test_benchmark_file_tools_protect_tests(tmp_path):
+    from mycoder.tools.edit import EditFileTool
+    from mycoder.tools.write import WriteFileTool
+
+    test_file = tmp_path / "tests" / "test_module.py"
+    test_file.parent.mkdir()
+    test_file.write_text("assert True\n", encoding="utf-8")
+    edit = EditFileTool(project_root=tmp_path, protect_benchmark_files=True)
+    write = WriteFileTool(project_root=tmp_path, protect_benchmark_files=True)
+
+    edit_result = edit.execute(
+        file_path="tests/test_module.py",
+        old_string="True",
+        new_string="False",
+    )
+    write_result = write.execute(file_path="test_new.py", content="assert True\n")
+
+    assert "benchmark policy protects" in edit_result
+    assert "benchmark policy protects" in write_result
+    assert test_file.read_text(encoding="utf-8") == "assert True\n"
+    assert not (tmp_path / "test_new.py").exists()
+
+
 # --- edit_file ---
 
 def test_edit_file_basic(tmp_path):
@@ -255,6 +342,47 @@ def test_edit_file_duplicate_string(tmp_path):
     path.write_text("dup\ndup\n")
     r = edit.execute(file_path=str(path), old_string="dup", new_string="x")
     assert "2 times" in r
+
+
+def test_edit_file_rejects_noop_and_empty_replacements(tmp_path):
+    edit = get_tool("edit_file")
+    path = tmp_path / "sample.py"
+    path.write_text("VALUE = 1\n")
+    assert "NO_OP_EDIT" in edit.execute(str(path), "VALUE = 1", "VALUE = 1")
+    assert "EMPTY_OLD_STRING" in edit.execute(str(path), "", "VALUE = 2")
+    assert path.read_text() == "VALUE = 1\n"
+
+
+def test_edit_file_replace_all(tmp_path):
+    from mycoder.tools.edit import EditFileTool
+
+    path = tmp_path / "x.py"
+    path.write_text("VALUE = 1\nVALUE = 1\n")
+    edit = EditFileTool(project_root=tmp_path)
+
+    result = edit.execute("x.py", "VALUE = 1", "VALUE = 2", replace_all=True)
+
+    assert result.startswith("Edited x.py")
+    assert path.read_text() == "VALUE = 2\nVALUE = 2\n"
+
+
+def test_scoped_edit_requires_a_current_read(tmp_path):
+    from mycoder.tools.edit import EditFileTool
+    from mycoder.tools.file_state import FileStateTracker
+    from mycoder.tools.read_file import ReadFileTool
+
+    path = tmp_path / "x.py"
+    path.write_text("VALUE = 1\n")
+    state = FileStateTracker()
+    read = ReadFileTool(project_root=tmp_path, file_state=state)
+    edit = EditFileTool(project_root=tmp_path, file_state=state)
+
+    assert "FILE_NOT_READ" in edit.execute("x.py", "1", "2")
+    assert "VALUE = 1" in read.execute("x.py")
+    path.write_text("VALUE = 3\n")
+    assert "STALE_FILE" in edit.execute("x.py", "3", "2")
+    read.execute("x.py")
+    assert edit.execute("x.py", "3", "2").startswith("Edited x.py")
 
 
 def test_edit_file_rejects_non_utf8(tmp_path):

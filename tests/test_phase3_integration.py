@@ -16,6 +16,7 @@ from mycoder.tools.grep_search import GrepSearchTool
 from mycoder.tools.read_file import ReadFileTool
 from mycoder.tools.todo_tools import TodoUpdateTool, TodoWriteTool
 from mycoder.tools.write import WriteFileTool
+from mycoder.tools.edit import EditFileTool
 
 
 def _tc(name, **args):
@@ -46,11 +47,15 @@ def _make_proj(tmp_path):
 
 def _agent(tmp_path):
     write = WriteFileTool()
+    edit = EditFileTool()
     read = ReadFileTool(project_root=tmp_path)
     grep = GrepSearchTool(project_root=tmp_path, rg_path=None)
     todo_write = TodoWriteTool()
     todo_update = TodoUpdateTool()
-    return Agent(llm=_FakeLLM(), tools=[write, read, grep, todo_write, todo_update])
+    return Agent(
+        llm=_FakeLLM(),
+        tools=[write, edit, read, grep, todo_write, todo_update],
+    )
 
 
 def test_search_plan_modify_verify(tmp_path, monkeypatch):
@@ -82,9 +87,14 @@ def test_search_plan_modify_verify(tmp_path, monkeypatch):
     # 5. mark the step in_progress -> mutation now allowed
     agent._exec_tool(_tc("todo_update", step_id="s1", status="in_progress"))
     out = agent._exec_tool(
-        _tc("write_file", file_path=str(tmp_path / "app.py"), content="def add(a,b):\n    return a+b\n")
+        _tc(
+            "edit_file",
+            file_path=str(tmp_path / "app.py"),
+            old_string="def add(a, b):\n    return a + b\n",
+            new_string="def add(a,b):\n    return a+b\n",
+        )
     )
-    assert "Wrote" in out
+    assert "Edited" in out
 
     # 6. verify via search
     r2 = agent._exec_tool(_tc("grep_search", pattern="def add", file_types="py"))

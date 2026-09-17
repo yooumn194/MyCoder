@@ -7,8 +7,15 @@ import pytest
 from mycoder.agent import Agent
 from mycoder.llm import LLM
 from mycoder.tools.base import Tool
+from mycoder.tools.bash import BashTool
 from mycoder.tools.correction import run_with_correction
+from mycoder.tools.edit import EditFileTool
+from mycoder.tools.file_state import FileStateTracker
+from mycoder.tools.grep_search import GrepSearchTool
 from mycoder.tools.idempotency import IdempotencyStore
+from mycoder.tools.list_files import ListFilesTool
+from mycoder.tools.read_file import ReadFileTool
+from mycoder.tools.write import WriteFileTool
 
 
 def _tc(tool: Tool, arguments: dict):
@@ -19,6 +26,7 @@ class _IdemTool(Tool):
     name = "dummy"
     description = "dummy idempotent tool"
     parameters = {"type": "object", "properties": {}, "required": []}
+    cacheable = True
 
     def __init__(self) -> None:
         self.calls = 0
@@ -82,13 +90,13 @@ def test_idempotency_store_key_and_dedup():
 
 
 # ------------------------------------------------------------ agent wiring
-def test_agent_serves_identical_idempotent_call_from_cache():
+def test_agent_serves_explicitly_cacheable_call_from_cache():
     tool = _IdemTool()
     agent = Agent(llm=LLM.__new__(LLM), tools=[tool])
     first = agent._exec_tool(_tc(tool, {"a": 1}))
     second = agent._exec_tool(_tc(tool, {"a": 1}))
     assert first == "result-1" and second == "result-1"
-    assert tool.calls == 1  # re-issuing an identical idempotent call does NOT re-execute
+    assert tool.calls == 1  # explicit cacheable contract prevents re-execution
 
 
 def test_agent_never_caches_non_idempotent_tool():
@@ -98,6 +106,70 @@ def test_agent_never_caches_non_idempotent_tool():
     second = agent._exec_tool(_tc(tool, {}))
     assert first == "wrote-1" and second == "wrote-2"
     assert tool.calls == 2  # side-effecting tool always re-executes
+
+
+def test_agent_reexecutes_retry_safe_but_volatile_observation():
+    class _VolatileRead(Tool):
+        name = "volatile_read"
+        description = "read mutable state"
+        parameters = {"type": "object", "properties": {}}
+        idempotent = True
+        cacheable = False
+
+        def __init__(self):
+            self.calls = 0
+
+        def execute(self):
+            self.calls += 1
+            return f"revision-{self.calls}"
+
+    tool = _VolatileRead()
+    agent = Agent(llm=LLM.__new__(LLM), tools=[tool])
+
+    assert agent._exec_tool(_tc(tool, {})) == "revision-1"
+    assert agent._exec_tool(_tc(tool, {})) == "revision-2"
+    assert tool.calls == 2
+
+
+def test_builtin_workspace_tools_do_not_cross_round_cache_mutable_state():
+    assert all(
+        tool_type.cacheable is False
+        for tool_type in (
+            ReadFileTool,
+            GrepSearchTool,
+            ListFilesTool,
+            EditFileTool,
+            WriteFileTool,
+        )
+    )
+    assert BashTool.idempotent is False
+
+
+def test_read_after_edit_returns_current_file_not_cached_snapshot(tmp_path):
+    path = tmp_path / "app.py"
+    path.write_text("VALUE = 1\n", encoding="utf-8")
+    state = FileStateTracker()
+    read = ReadFileTool(project_root=tmp_path, file_state=state)
+    edit = EditFileTool(project_root=tmp_path, file_state=state)
+    agent = Agent(llm=LLM.__new__(LLM), tools=[read, edit])
+
+    before = agent._exec_tool(_tc(read, {"file_path": "app.py"}))
+    changed = agent._exec_tool(
+        _tc(
+            edit,
+            {
+                "file_path": "app.py",
+                "old_string": "VALUE = 1",
+                "new_string": "VALUE = 2",
+            },
+        )
+    )
+    after = agent._exec_tool(_tc(read, {"file_path": "app.py"}))
+
+    assert "VALUE = 1" in before
+    assert "Edited app.py" in changed
+    assert "VALUE = 2" in after
+    assert getattr(after, "cache_hit") is False
 
 
 def test_idempotency_store_hit_rate():

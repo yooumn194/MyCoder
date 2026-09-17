@@ -109,6 +109,41 @@ def test_reasoning_tokens_are_traced_but_not_double_counted():
     assert summary["total_tokens"] == 13
 
 
+def test_provider_wire_contract_is_recorded():
+    from mycoder.llm import LLMResponse, _traced
+    from mycoder.tool_protocol import ToolProtocolAdapter
+    from structlog.contextvars import bound_contextvars
+
+    tracer = LLMTracer()
+
+    class _Fake:
+        _tracer = tracer
+        caller = "agent"
+        model = "deepseek-flash"
+        provider = "openrouter"
+        tool_protocol = ToolProtocolAdapter.for_model(model, provider=provider)
+        tool_choice_fallbacks = 0
+
+        @_traced
+        def chat(self, messages, tools=None, tool_choice=None, strict_tool_choice=False):
+            return LLMResponse(content="ok", prompt_tokens=2, completion_tokens=1)
+
+    with bound_contextvars(agent_phase="mutate"):
+        _Fake().chat(
+            [{"role": "user", "content": "fix"}],
+            tools=[{"type": "function", "function": {"name": "edit_file"}}],
+            tool_choice={"type": "function", "function": {"name": "edit_file"}},
+            strict_tool_choice=True,
+        )
+    trace = tracer._snapshot("unknown")[0]  # noqa: SLF001 - metadata assertion
+    assert trace.provider == "openrouter"
+    assert trace.tool_dialect == "zcode"
+    assert trace.wire_tool_names == ["Edit"]
+    assert trace.tool_choice_wire["function"]["name"] == "Edit"
+    assert trace.strict_tool_choice is True
+    assert trace.phase == "mutate"
+
+
 def test_session_budget_is_enforced_after_each_llm_call():
     tracer = LLMTracer()
     guard = TokenBudgetGuard(max_tokens_per_session=10, tracer=tracer)
@@ -135,3 +170,25 @@ def test_session_budget_is_enforced_after_each_llm_call():
     assert tracer.get_session_summary("budgeted")["total_calls"] == 2
 
     tracer.unregister_budget_guard("budgeted", guard)
+
+
+def test_session_budget_rejects_projected_call_before_provider_entry():
+    tracer = LLMTracer()
+    guard = TokenBudgetGuard(max_tokens_per_session=100, tracer=tracer)
+    guard.add_usage("budgeted", 80)
+    tracer.register_budget_guard("budgeted", guard)
+
+    entered = False
+    with pytest.raises(TokenBudgetExceeded) as exc_info:
+        with tracer.trace(
+            "budgeted",
+            "api",
+            "model",
+            projected_tokens=21,
+        ):
+            entered = True
+
+    assert entered is False
+    assert exc_info.value.used_tokens == 80
+    assert exc_info.value.projected_tokens == 21
+    assert tracer.get_session_summary("budgeted")["total_calls"] == 0

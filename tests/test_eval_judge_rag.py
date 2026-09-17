@@ -120,3 +120,97 @@ def test_document_parent_child_and_retrieve_parents(tmp_path):
         assert "parent_id" in e and "parent_content" in e
         if e.get("parent_id"):
             assert e["parent_content"] is not None
+
+
+# ------------------------------------------------- scorer wiring (the P1-4 gap)
+def _results_for_judge():
+    """One case with a recorded answer, one without — the coverage split."""
+    return [
+        {
+            "id": "A",
+            "question": "fix the bug",
+            "answer": "the fix is X",
+            "category": "bug",
+            "difficulty": "easy",
+            "agent_status": "success",
+        },
+        {
+            "id": "B",
+            "question": "fix another bug",
+            "answer": "",
+            "category": "bug",
+            "difficulty": "easy",
+            "agent_status": "failed",
+        },
+    ]
+
+
+class _UnavailableJudge:
+    available = False
+
+
+class _StubJudge:
+    available = True
+
+    def judge(self, question, answer, reference=None):
+        return {"score": 1.0 if "X" in answer else 0.0, "reasoning": "stub"}
+
+
+def test_quality_scores_says_unmeasured_instead_of_publishing_a_neutral_score():
+    """`LLMJudge.available` is the difference between "no judge" and "the judge
+    was unimpressed"; a bare 0.5 average would read as a measured result."""
+    from eval_bench.scorer import quality_scores
+
+    quality = quality_scores(_results_for_judge(), judge=_UnavailableJudge())
+
+    assert quality["judge_available"] is False
+    assert quality["judged"] == 0
+    assert quality["per_case"] == []
+    # Still reported, so the missing coverage is visible rather than silent.
+    assert quality["unjudged"] == 1
+
+
+def test_quality_scores_only_judges_cases_that_recorded_both_sides():
+    from eval_bench.scorer import quality_scores
+
+    quality = quality_scores(_results_for_judge(), judge=_StubJudge())
+
+    assert quality["judge_available"] is True
+    assert quality["judged"] == 1
+    assert quality["avg_score"] == 1.0
+    assert [case["id"] for case in quality["per_case"]] == ["A"]
+    # No answer recorded -> not judged, and counted as such.
+    assert quality["unjudged"] == 1
+    assert quality["low_score_cases"] == []
+
+
+def test_report_states_that_the_quality_dimension_was_not_measured():
+    from eval_bench.scorer import compute_stats, quality_scores, render_markdown
+
+    results = _results_for_judge()
+    env = {"python": "3.12", "os": "macOS", "base_url": "http://x", "dataset": "d.json"}
+
+    off = compute_stats(results)
+    off["quality"] = quality_scores(results, judge=_UnavailableJudge())
+    report = render_markdown(off, results, env)
+    assert "## Answer quality (LLM-as-Judge)" in report
+    assert "No judge LLM configured" in report
+
+    on = compute_stats(results)
+    on["quality"] = quality_scores(results, judge=_StubJudge())
+    measured = render_markdown(on, results, env)
+    assert "**Judged:** 1" in measured
+
+    # Without --judge the axis is simply absent, not rendered as zero.
+    assert "Answer quality" not in render_markdown(compute_stats(results), results, env)
+
+
+def test_judge_availability_tracks_whether_a_key_resolved(monkeypatch):
+    """`_resolve_llm` returning None is what makes the scorer say "unmeasured"."""
+    from eval_bench import judge as judge_module
+
+    monkeypatch.setattr(judge_module, "_resolve_llm", lambda: None)
+    assert judge_module.LLMJudge().available is False
+
+    monkeypatch.setattr(judge_module, "_resolve_llm", lambda: _Stub("{}"))
+    assert judge_module.LLMJudge().available is True

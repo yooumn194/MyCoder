@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from mycoder.agents.definition import BUILTIN_SUBAGENTS, SubagentDefinition
 from mycoder.agents.planner_prompt import build_system_prompt
 from mycoder.agents.runner import SubagentRunner
+from mycoder.agent_factory import AgentFactory
 from mycoder.tools import ALL_TOOLS
 
 # 真实评测发现: 简单任务烧满 60k token 被预算熔断。以下收紧是让每个子 agent
@@ -21,9 +22,18 @@ def test_builtin_budgets_tightened():
     assert BUILTIN_SUBAGENTS["implementer"].max_turns <= 8
     assert BUILTIN_SUBAGENTS["implementer"].max_tokens <= 30000
     assert BUILTIN_SUBAGENTS["implementer"].max_context_tokens < 60000
-    for name in ("explorer", "planner", "reviewer"):
+    for name in ("explorer", "planner", "verifier", "reviewer"):
         assert BUILTIN_SUBAGENTS[name].max_turns <= 8
         assert BUILTIN_SUBAGENTS[name].max_context_tokens <= 24000
+
+
+def test_agent_factory_applies_request_soft_budget_ratio():
+    factory = AgentFactory.from_defaults(llm=object(), tools=[], enable_memory=False, soft_budget_ratio=20_000 / 35_000)
+
+    agent = factory.build(max_rounds=8)
+
+    assert agent.convergence_limits.soft_budget_ratio == 20_000 / 35_000
+    assert agent.convergence_limits.max_rounds == 8
 
 
 def test_subagent_uses_definition_context_window(monkeypatch):
@@ -100,9 +110,7 @@ def test_subagent_uses_model_factory_tier(monkeypatch):
             return f"llm-for-{tier}"
 
     monkeypatch.setattr("mycoder.agent.Agent", _FakeAgent)
-    orch = SimpleNamespace(
-        llm="shared", tools=ALL_TOOLS, model_factory=_Factory()
-    )
+    orch = SimpleNamespace(llm="shared", tools=ALL_TOOLS, model_factory=_Factory())
     runner = SubagentRunner(
         definition=BUILTIN_SUBAGENTS["explorer"],  # model_tier = fast
         task="t",

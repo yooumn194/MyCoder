@@ -1,6 +1,7 @@
 """Tests for Phase 4 multi-agent orchestration (Module A)."""
 
 import asyncio
+from types import SimpleNamespace
 
 
 from mycoder.agents import (
@@ -55,6 +56,7 @@ def _ctx():
 def _executor_returning(data):
     async def _exec(task, system_prompt):
         return data
+
     return _exec
 
 
@@ -62,39 +64,49 @@ def _executor_returning(data):
 # SubagentDefinition
 # ---------------------------------------------------------------------------
 
+
 def test_subagent_readonly_enforced():
-    """Read-only subagents (explorer/planner/reviewer) must not own mutation tools."""
-    mutation = {"write_file", "edit_file", "execute_in_sandbox"}
-    for name in ("explorer", "planner", "reviewer"):
+    """Read-only subagents must not own host-workspace mutation tools."""
+    mutation = {"write_file", "edit_file"}
+    for name in ("explorer", "planner", "verifier", "reviewer"):
         assert BUILTIN_SUBAGENTS[name].read_only is True
         assert not (set(BUILTIN_SUBAGENTS[name].allowed_tools) & mutation)
+    assert "execute_in_sandbox" in BUILTIN_SUBAGENTS["verifier"].allowed_tools
     assert BUILTIN_SUBAGENTS["implementer"].read_only is False
+    assert "edit_file" in BUILTIN_SUBAGENTS["implementer"].allowed_tools
     assert "write_file" in BUILTIN_SUBAGENTS["implementer"].allowed_tools
+    assert "execute_in_sandbox" in BUILTIN_SUBAGENTS["implementer"].allowed_tools
 
 
 def test_auto_selects_parallel_for_independent_read_only_wave():
-    assignments = Orchestrator._normalize_assignments([
-        {"id": "explore", "subagent_name": "explorer", "task": "scan"},
-        {"id": "review", "subagent_name": "reviewer", "task": "review"},
-    ])
+    assignments = Orchestrator._normalize_assignments(
+        [
+            {"id": "explore", "subagent_name": "explorer", "task": "scan"},
+            {"id": "review", "subagent_name": "reviewer", "task": "review"},
+        ]
+    )
     layers = Orchestrator._topological_layers(assignments)
     assert Orchestrator._select_auto_strategy(layers) == OrchestrationStrategy.PARALLEL
 
 
 def test_auto_selects_sequential_for_concurrent_writers():
-    assignments = Orchestrator._normalize_assignments([
-        {"id": "a", "subagent_name": "implementer", "task": "write a"},
-        {"id": "b", "subagent_name": "implementer", "task": "write b"},
-    ])
+    assignments = Orchestrator._normalize_assignments(
+        [
+            {"id": "a", "subagent_name": "implementer", "task": "write a"},
+            {"id": "b", "subagent_name": "implementer", "task": "write b"},
+        ]
+    )
     layers = Orchestrator._topological_layers(assignments)
     assert Orchestrator._select_auto_strategy(layers) == OrchestrationStrategy.SEQUENTIAL
 
 
 def test_auto_selects_sequential_when_dag_has_no_fan_out():
-    assignments = Orchestrator._normalize_assignments([
-        {"id": "a", "subagent_name": "explorer", "task": "scan"},
-        {"id": "b", "subagent_name": "reviewer", "task": "review", "depends_on": ["a"]},
-    ])
+    assignments = Orchestrator._normalize_assignments(
+        [
+            {"id": "a", "subagent_name": "explorer", "task": "scan"},
+            {"id": "b", "subagent_name": "reviewer", "task": "review", "depends_on": ["a"]},
+        ]
+    )
     layers = Orchestrator._topological_layers(assignments)
     assert Orchestrator._select_auto_strategy(layers) == OrchestrationStrategy.SEQUENTIAL
 
@@ -103,10 +115,28 @@ def test_auto_selects_sequential_when_dag_has_no_fan_out():
 # SubagentRunner
 # ---------------------------------------------------------------------------
 
+
+def test_patch_runner_prompt_prioritizes_tools_before_result_contract():
+    runner = SubagentRunner(
+        BUILTIN_SUBAGENTS["implementer"],
+        "fix the bug",
+        orchestrator=SimpleNamespace(),
+        parent_context={"task_id": "t", "require_patch": True},
+    )
+
+    prompt = runner._build_system_prompt()
+
+    assert "Use the available tools first" in prompt
+    assert "Output MUST be a single RFC" not in prompt
+
+
 async def test_subagent_envelope_validation():
     runner = SubagentRunner(
-        BUILTIN_SUBAGENTS["explorer"], "search foo", orchestrator=None,
-        parent_context=_ctx(), instance_id=INSTANCE,
+        BUILTIN_SUBAGENTS["explorer"],
+        "search foo",
+        orchestrator=None,
+        parent_context=_ctx(),
+        instance_id=INSTANCE,
         executor=_executor_returning(_success_envelope()),
     )
     env = await runner.run()
@@ -115,12 +145,244 @@ async def test_subagent_envelope_validation():
     assert env.meta.subagent_instance_id == INSTANCE
 
 
-async def test_subagent_envelope_partial_validation():
-    data = _envelope("partial", confidence="medium", completeness_ratio=0.5,
-                     error={"code": "P", "category": "transient", "retryable": True, "message": "half done"})
+async def test_benchmark_implementer_cannot_succeed_without_diff():
+    class _Manager:
+        async def get_diff(self):
+            return "(no changes)"
+
     runner = SubagentRunner(
-        BUILTIN_SUBAGENTS["implementer"], "t", orchestrator=None,
-        parent_context=_ctx(), instance_id=INSTANCE, executor=_executor_returning(data),
+        BUILTIN_SUBAGENTS["implementer"],
+        "fix it",
+        orchestrator=SimpleNamespace(_sandbox_manager=_Manager()),
+        parent_context={"task_id": "bench", "require_patch": True},
+        instance_id=INSTANCE,
+        executor=_executor_returning(_success_envelope()),
+    )
+
+    env = await runner.run()
+
+    assert env.status == "failed"
+    assert env.error.code == "PATCH_REQUIRED"
+    assert env.error.retryable is True
+    assert "tool_calls=0" in env.error.message
+
+
+async def test_benchmark_patch_failure_includes_prior_retry_evidence():
+    class _Manager:
+        async def get_diff(self):
+            return "(no changes)"
+
+    runner = SubagentRunner(
+        BUILTIN_SUBAGENTS["implementer"],
+        "fix it",
+        orchestrator=SimpleNamespace(_sandbox_manager=_Manager()),
+        parent_context={"task_id": "bench", "require_patch": True},
+        instance_id=INSTANCE,
+        executor=_executor_returning(_success_envelope()),
+        prior_tool_events=[
+            {
+                "name": "read_file",
+                "succeeded": True,
+                "mutation": False,
+                "status": "success",
+            }
+        ],
+    )
+
+    env = await runner.run()
+
+    assert env.status == "failed"
+    assert "tool_calls=1" in env.error.message
+    assert "successful_inspections=1" in env.error.message
+    assert "tool_calls=0" not in env.error.message
+
+
+async def test_benchmark_implementer_accepts_real_diff():
+    class _Manager:
+        async def get_diff(self):
+            return "diff --git a/module.py b/module.py\n+VALUE = 2\n"
+
+    runner = SubagentRunner(
+        BUILTIN_SUBAGENTS["implementer"],
+        "fix it",
+        orchestrator=SimpleNamespace(_sandbox_manager=_Manager()),
+        parent_context={"task_id": "bench", "require_patch": True},
+        instance_id=INSTANCE,
+        executor=_executor_returning(_success_envelope()),
+    )
+
+    assert (await runner.run()).status == "success"
+
+
+async def test_benchmark_implementer_rejects_unsafe_patch_scope():
+    class _Manager:
+        async def get_diff(self):
+            added = "\n".join(f"+line {index}" for index in range(250))
+            return (
+                "diff --git a/module.py b/module.py\n"
+                "new file mode 100644\n"
+                "--- /dev/null\n"
+                "+++ b/module.py\n"
+                f"@@ -0,0 +1,250 @@\n{added}\n"
+                "diff --git a/src/module.py b/src/module.py\n"
+                "--- a/src/module.py\n"
+                "+++ b/src/module.py\n"
+                "@@ -1 +1 @@\n-old\n+new\n"
+            )
+
+    runner = SubagentRunner(
+        BUILTIN_SUBAGENTS["implementer"],
+        "fix it",
+        orchestrator=SimpleNamespace(_sandbox_manager=_Manager()),
+        parent_context={"task_id": "bench", "require_patch": True},
+        instance_id=INSTANCE,
+        executor=_executor_returning(_success_envelope()),
+    )
+
+    env = await runner.run()
+
+    assert env.status == "failed"
+    assert env.error.code == "PATCH_SCOPE_VIOLATION"
+    assert env.error.retryable is True
+
+
+def test_benchmark_verifier_rejects_failed_check_even_if_model_claims_success():
+    runner = SubagentRunner(
+        BUILTIN_SUBAGENTS["verifier"],
+        "verify it",
+        orchestrator=SimpleNamespace(),
+        parent_context={"task_id": "bench", "require_patch": True},
+        instance_id=INSTANCE,
+    )
+    runner._verification_evidence = [
+        {
+            "arguments": {"command": "pytest -q tests/test_bug.py"},
+            "succeeded": False,
+            "verification": True,
+        }
+    ]
+    envelope = runner._build_success_envelope(_success_envelope())
+
+    error = runner._validate_required_verification(envelope)
+
+    assert error.status == "failed"
+    assert error.error.code == "VERIFICATION_FAILED"
+
+
+def test_benchmark_verifier_keeps_prior_success_when_later_check_fails():
+    runner = SubagentRunner(
+        BUILTIN_SUBAGENTS["verifier"],
+        "verify it",
+        orchestrator=SimpleNamespace(),
+        parent_context={"task_id": "bench", "require_patch": True},
+        instance_id=INSTANCE,
+    )
+    runner._verification_evidence = [
+        {"arguments": {"command": "python -m unittest tests.test_bug"}, "succeeded": True},
+        {"arguments": {"command": "pytest -q tests/test_all.py"}, "succeeded": False},
+    ]
+
+    envelope = runner._build_success_envelope(_success_envelope())
+    assert runner._validate_required_verification(envelope) is None
+
+
+async def test_benchmark_empty_patch_is_retried_with_correction():
+    tasks = []
+
+    async def _implement(task, _system_prompt):
+        tasks.append(task)
+        return _success_envelope()
+
+    class _Manager:
+        calls = 0
+
+        async def get_diff(self):
+            self.calls += 1
+            if self.calls == 1:
+                return "(no changes)"
+            return "diff --git a/module.py b/module.py\n+VALUE = 2\n"
+
+    manager = _Manager()
+    orchestrator = _orchestrator()
+    orchestrator._sandbox_manager = manager
+    result = await orchestrator.orchestrate(
+        "fix it",
+        OrchestrationStrategy.SEQUENTIAL,
+        parent_context={"task_id": "bench", "require_patch": True},
+        subtasks=[
+            {
+                "id": "edit",
+                "subagent_name": "implementer",
+                "task": "fix it",
+                "executor": _implement,
+            },
+            {
+                "id": "verify",
+                "subagent_name": "verifier",
+                "task": "verify it",
+                "depends_on": ["edit"],
+                "executor": _executor_returning(_success_envelope()),
+            },
+        ],
+    )
+
+    assert result.success is True
+    assert manager.calls == 2
+    assert len(tasks) == 2
+    assert tasks[1].startswith("CORRECTION:")
+    assert "tool_calls=0" in tasks[1]
+
+
+async def test_benchmark_patch_pipeline_skips_redundant_meta_planner():
+    class _Planner:
+        async def decompose(self, *_args, **_kwargs):
+            raise AssertionError("benchmark patch jobs must not call the meta-planner")
+
+    orchestrator = Orchestrator(blackboard=Blackboard(), llm=None, planner=_Planner())
+    assignments = await orchestrator._decompose(
+        "fix the issue",
+        {"task_id": "bench", "require_patch": True},
+    )
+
+    assert [item["subagent_name"] for item in assignments] == ["implementer", "verifier"]
+    assert assignments[1]["depends_on"] == [assignments[0]["id"]]
+
+
+def test_harness_owned_pipeline_drops_planned_verifier():
+    """A harness verdict must replace, not duplicate, an LLM verifier."""
+    assignments = Orchestrator._ensure_patch_pipeline(
+        [
+            {"id": "scan", "subagent_name": "explorer", "task": "inspect"},
+            {"id": "edit", "subagent_name": "implementer", "task": "edit", "depends_on": ["scan"]},
+            {"id": "check", "subagent_name": "verifier", "task": "check", "depends_on": ["edit"]},
+            {"id": "report", "subagent_name": "reviewer", "task": "summarize", "depends_on": ["check"]},
+        ],
+        "fix it",
+        harness_verification=True,
+    )
+
+    assert [item["subagent_name"] for item in assignments] == [
+        "explorer",
+        "implementer",
+        "reviewer",
+    ]
+    assert assignments[-1]["depends_on"] == ["edit"]
+
+
+async def test_subagent_envelope_partial_validation():
+    data = _envelope(
+        "partial",
+        confidence="medium",
+        completeness_ratio=0.5,
+        error={"code": "P", "category": "transient", "retryable": True, "message": "half done"},
+    )
+    runner = SubagentRunner(
+        BUILTIN_SUBAGENTS["implementer"],
+        "t",
+        orchestrator=None,
+        parent_context=_ctx(),
+        instance_id=INSTANCE,
+        executor=_executor_returning(data),
     )
     env = await runner.run()
     assert env.status == "partial"
@@ -129,11 +391,19 @@ async def test_subagent_envelope_partial_validation():
 
 async def test_subagent_invalid_partial_ratio_becomes_error():
     """ratio=0.0 must hard-fail -> error envelope, never silently accepted."""
-    data = _envelope("partial", confidence="medium", completeness_ratio=0.0,
-                     error={"code": "P", "category": "transient", "retryable": True, "message": "x"})
+    data = _envelope(
+        "partial",
+        confidence="medium",
+        completeness_ratio=0.0,
+        error={"code": "P", "category": "transient", "retryable": True, "message": "x"},
+    )
     runner = SubagentRunner(
-        BUILTIN_SUBAGENTS["implementer"], "t", orchestrator=None,
-        parent_context=_ctx(), instance_id=INSTANCE, executor=_executor_returning(data),
+        BUILTIN_SUBAGENTS["implementer"],
+        "t",
+        orchestrator=None,
+        parent_context=_ctx(),
+        instance_id=INSTANCE,
+        executor=_executor_returning(data),
     )
     env = await runner.run()
     assert env.status == "failed"  # contract violation surfaced, not wrapped
@@ -142,8 +412,12 @@ async def test_subagent_invalid_partial_ratio_becomes_error():
 async def test_subagent_envelope_failed_no_result():
     data = _envelope("failed")
     runner = SubagentRunner(
-        BUILTIN_SUBAGENTS["reviewer"], "t", orchestrator=None,
-        parent_context=_ctx(), instance_id=INSTANCE, executor=_executor_returning(data),
+        BUILTIN_SUBAGENTS["reviewer"],
+        "t",
+        orchestrator=None,
+        parent_context=_ctx(),
+        instance_id=INSTANCE,
+        executor=_executor_returning(data),
     )
     env = await runner.run()
     assert env.status == "failed"
@@ -160,17 +434,20 @@ async def test_subagent_timeout():
 
     # copy the definition with a tiny timeout — do NOT mutate the global catalog
     definition = replace(BUILTIN_SUBAGENTS["explorer"], timeout_seconds=0.1)
-    runner = SubagentRunner(definition, "t", orchestrator=None,
-                            parent_context=_ctx(), instance_id=INSTANCE, executor=_slow)
+    runner = SubagentRunner(definition, "t", orchestrator=None, parent_context=_ctx(), instance_id=INSTANCE, executor=_slow)
     env = await runner.run()
     assert env.status == "failed"
     assert env.error.code == "SUBAGENT_TIMEOUT"
+    assert env.error.retryable is True
 
 
 async def test_subagent_inner_data_wrapped():
     runner = SubagentRunner(
-        BUILTIN_SUBAGENTS["explorer"], "t", orchestrator=None,
-        parent_context=_ctx(), instance_id=INSTANCE,
+        BUILTIN_SUBAGENTS["explorer"],
+        "t",
+        orchestrator=None,
+        parent_context=_ctx(),
+        instance_id=INSTANCE,
         executor=_executor_returning({"files_found": [], "patterns_searched": [], "total_matches": 0}),
     )
     env = await runner.run()
@@ -181,6 +458,7 @@ async def test_subagent_inner_data_wrapped():
 # ---------------------------------------------------------------------------
 # Blackboard
 # ---------------------------------------------------------------------------
+
 
 async def test_blackboard_put_get():
     bb = Blackboard(ttl_seconds=60)
@@ -197,9 +475,11 @@ async def test_blackboard_ttl_expiry():
 
 async def test_blackboard_asyncio_lock_concurrent():
     bb = Blackboard()
+
     async def _writer(i):
         for _ in range(20):
             await bb.put("task-1", "count", i)
+
     await asyncio.gather(*[_writer(i) for i in range(5)])
     assert await bb.get("task-1", "count") in {0, 1, 2, 3, 4}
 
@@ -217,8 +497,40 @@ async def test_blackboard_query_prefix():
 # Orchestrator
 # ---------------------------------------------------------------------------
 
+
 def _orchestrator():
     return Orchestrator(blackboard=Blackboard(), llm=None)
+
+
+async def test_patch_task_enforces_implementer_then_verifier():
+    orch = _orchestrator()
+    assignments = await orch._decompose(
+        "fix the bug",
+        {"task_id": "bench", "require_patch": True},
+        [{"id": "scan", "subagent_name": "explorer", "task": "locate it"}],
+    )
+
+    assert [item["subagent_name"] for item in assignments] == [
+        "explorer",
+        "implementer",
+        "verifier",
+    ]
+    assert assignments[1]["depends_on"] == ["scan"]
+    assert assignments[2]["depends_on"] == [assignments[1]["id"]]
+    assert assignments[1]["estimated_tokens"] == 20_000
+    assert assignments[1]["reserved_tokens"] == 4_096
+    assert assignments[2]["estimated_tokens"] == 10_000
+    assert "fix the bug" in assignments[2]["task"]
+
+    repaired = await orch._decompose(
+        "fix the bug",
+        {"task_id": "bench", "require_patch": True},
+        [
+            {"id": "edit", "subagent_name": "implementer", "task": "edit"},
+            {"id": "check", "subagent_name": "verifier", "task": "check"},
+        ],
+    )
+    assert repaired[1]["depends_on"] == ["edit"]
 
 
 async def test_orchestrator_sequential_order():
@@ -234,7 +546,9 @@ async def test_orchestrator_sequential_order():
 
     orch = _orchestrator()
     result = await orch.orchestrate(
-        "t", OrchestrationStrategy.SEQUENTIAL, parent_context=_ctx(),
+        "t",
+        OrchestrationStrategy.SEQUENTIAL,
+        parent_context=_ctx(),
         subtasks=[
             {"subagent_name": "explorer", "task": "a", "executor": _exec_a},
             {"subagent_name": "implementer", "task": "b", "executor": _exec_b},
@@ -247,7 +561,9 @@ async def test_orchestrator_sequential_order():
 async def test_parallel_subagents():
     orch = _orchestrator()
     result = await orch.orchestrate(
-        "t", OrchestrationStrategy.PARALLEL, parent_context=_ctx(),
+        "t",
+        OrchestrationStrategy.PARALLEL,
+        parent_context=_ctx(),
         subtasks=[
             {"subagent_name": "explorer", "task": "a", "executor": _executor_returning(_success_envelope())},
             {"subagent_name": "reviewer", "task": "b", "executor": _executor_returning(_success_envelope())},
@@ -337,14 +653,16 @@ async def test_circuit_breaker_after_3_failures():
     orch = _orchestrator()
     # first call: 3 failures trip the breaker (count reaches the threshold)
     await orch.orchestrate(
-        "t", OrchestrationStrategy.SEQUENTIAL, parent_context=_ctx(),
-        subtasks=[
-            {"subagent_name": "reviewer", "task": f"f{i}", "executor": _fail} for i in range(3)
-        ],
+        "t",
+        OrchestrationStrategy.SEQUENTIAL,
+        parent_context=_ctx(),
+        subtasks=[{"subagent_name": "reviewer", "task": f"f{i}", "executor": _fail} for i in range(3)],
     )
     # next call (within the cooldown): the same subagent is skipped before running
     result = await orch.orchestrate(
-        "t", OrchestrationStrategy.SEQUENTIAL, parent_context=_ctx(),
+        "t",
+        OrchestrationStrategy.SEQUENTIAL,
+        parent_context=_ctx(),
         subtasks=[{"subagent_name": "reviewer", "task": "f4", "executor": _fail}],
     )
     env = result.results["reviewer"]
@@ -363,13 +681,17 @@ async def test_circuit_breaker_self_heals_after_cooldown():
 
     orch = _orchestrator()
     await orch.orchestrate(
-        "t", OrchestrationStrategy.SEQUENTIAL, parent_context=_ctx(),
+        "t",
+        OrchestrationStrategy.SEQUENTIAL,
+        parent_context=_ctx(),
         subtasks=[{"subagent_name": "reviewer", "task": f"f{i}", "executor": _exec} for i in range(3)],
     )
     # simulate the cooldown elapsing -> next call is a half-open probe
     orch._circuit_open_since["reviewer"] -= CIRCUIT_BREAKER_COOLDOWN + 1
     result = await orch.orchestrate(
-        "t", OrchestrationStrategy.SEQUENTIAL, parent_context=_ctx(),
+        "t",
+        OrchestrationStrategy.SEQUENTIAL,
+        parent_context=_ctx(),
         subtasks=[{"subagent_name": "reviewer", "task": "probe", "executor": _exec}],
     )
     env = result.results["reviewer"]
@@ -386,19 +708,25 @@ async def test_circuit_breaker_probe_failure_reopens():
 
     orch = _orchestrator()
     await orch.orchestrate(
-        "t", OrchestrationStrategy.SEQUENTIAL, parent_context=_ctx(),
+        "t",
+        OrchestrationStrategy.SEQUENTIAL,
+        parent_context=_ctx(),
         subtasks=[{"subagent_name": "reviewer", "task": f"f{i}", "executor": _always_fail} for i in range(3)],
     )
     # after cooldown, the probe RUNS (and fails)
     orch._circuit_open_since["reviewer"] -= CIRCUIT_BREAKER_COOLDOWN + 1
     r1 = await orch.orchestrate(
-        "t", OrchestrationStrategy.SEQUENTIAL, parent_context=_ctx(),
+        "t",
+        OrchestrationStrategy.SEQUENTIAL,
+        parent_context=_ctx(),
         subtasks=[{"subagent_name": "reviewer", "task": "probe1", "executor": _always_fail}],
     )
     assert r1.results["reviewer"].status == "failed"  # probe ran, failed
     # re-opened: immediately after, it is skipped again (fresh cooldown)
     r2 = await orch.orchestrate(
-        "t", OrchestrationStrategy.SEQUENTIAL, parent_context=_ctx(),
+        "t",
+        OrchestrationStrategy.SEQUENTIAL,
+        parent_context=_ctx(),
         subtasks=[{"subagent_name": "reviewer", "task": "probe2", "executor": _always_fail}],
     )
     assert r2.results["reviewer"].error.code == "CIRCUIT_BREAKER_OPEN"
@@ -408,6 +736,7 @@ async def test_circuit_breaker_probe_failure_reopens():
 # spawn_subagent tool
 # ---------------------------------------------------------------------------
 
+
 def test_spawn_subagent_tool_formats_envelope():
     async def _exec(task, system_prompt):
         return _success_envelope()
@@ -415,8 +744,12 @@ def test_spawn_subagent_tool_formats_envelope():
     class _FakeOrch:
         async def spawn_subagent(self, subagent_type, task, blocking):
             runner = SubagentRunner(
-                BUILTIN_SUBAGENTS[subagent_type], task, orchestrator=None,
-                parent_context=_ctx(), instance_id=INSTANCE, executor=_exec,
+                BUILTIN_SUBAGENTS[subagent_type],
+                task,
+                orchestrator=None,
+                parent_context=_ctx(),
+                instance_id=INSTANCE,
+                executor=_exec,
             )
             return await runner.run()
 

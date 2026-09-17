@@ -1,6 +1,6 @@
 """接线验证 — 5 个已建组件确实接进了生产默认路径。
 
-Each test pins the "wired by default" claim from docs/project-gaps-v2.md:
+Each test pins the "wired by default" claim from docs/项目缺口第二版.md:
 these components exist AND the production default path (CLI/API/tools) uses
 them — not just that the module exists with a passing unit test.
 """

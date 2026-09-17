@@ -198,3 +198,23 @@ def test_goal_drift_without_planner_keeps_queue():
     )
     assert action == "goal_drift_no_planner"
     assert len(queue) == 1  # untouched
+
+
+def test_sequential_execution_passes_node_goal_to_deviation_judge():
+    ex = _make_exec([_env("success")])
+    detector = DeviationDetector(goal_judge=lambda _env, goal: goal == "off-target")
+    orch = _orchestrator(deviation_detector=detector, max_replan_rounds=1)
+
+    asyncio.run(
+        orch.orchestrate(
+            task="overall goal",
+            subtasks=[
+                {
+                    "subagent_name": "reviewer",
+                    "task": "off-target",
+                    "executor": ex,
+                }
+            ],
+        )
+    )
+    assert orch._exp_records[0]["deviation"] == "goal_drift"

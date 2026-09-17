@@ -73,3 +73,15 @@ def test_get_stats_reports_counts_and_distribution(memory_store):
     assert stats["by_type"].get("fact") == 1
     assert stats["by_scope"].get("global") == 1
     assert 0.0 <= stats["avg_confidence"] <= 1.0
+
+
+def test_correct_memory_reactivates_rewritten_entry(memory_store):
+    mem_id = _save(memory_store, "旧的错误结论", confidence=0.2)
+    memory_store.update(mem_id, deprecated_by="audit")
+    maintainer = MemoryMaintainer(memory_store)
+
+    assert maintainer.correct_memory(mem_id, content="新的正确结论") is True
+    entry = memory_store.get(mem_id)
+    assert entry.content == "新的正确结论"
+    assert entry.deprecated_by is None
+    assert entry.confidence >= 0.6

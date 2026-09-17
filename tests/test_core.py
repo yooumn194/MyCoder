@@ -1,8 +1,11 @@
 """Tests for core modules: config, context, session, imports."""
 
+import pytest
+
 from mycoder import Agent, LLM, Config, ALL_TOOLS, __version__
 from mycoder import session as session_module
 from mycoder.context import ContextManager, estimate_tokens
+from mycoder.llm import LLMResponse, ToolCall
 from mycoder.session import save_session, load_session, list_sessions
 from mycoder.tools import get_tool
 
@@ -11,16 +14,32 @@ def test_version():
     assert __version__ == "0.5.0"
 
 
+def test_reasoning_only_response_keeps_valid_assistant_history_message():
+    response = LLMResponse(reasoning_content="private reasoning")
+
+    assert response.message == {
+        "role": "assistant",
+        "content": "No visible response; continue.",
+        "reasoning_content": "private reasoning",
+    }
+
+
+def test_tool_call_response_may_keep_null_content():
+    response = LLMResponse(tool_calls=[ToolCall(id="call-1", name="read_file", arguments={})])
+
+    assert response.message["content"] is None
+    assert response.message["tool_calls"][0]["id"] == "call-1"
+
+
 def test_public_api_exports():
     """Users should be able to import key classes from the top-level package."""
     assert Agent is not None
     assert LLM is not None
     assert Config is not None
-    # bash was replaced by execute_in_sandbox; sync_workspace, grep_search,
-    # list_files, fetch_url, and the Phase 3 planning tools added
+    # bash was replaced by execute_in_sandbox; grep_search, list_files,
+    # fetch_url, and the Phase 3 planning tools added
     assert {t.name for t in ALL_TOOLS} == {
         "execute_in_sandbox",
-        "sync_workspace",
         "grep_search",
         "list_files",
         "read_file",
@@ -61,6 +80,14 @@ def test_config_defaults(monkeypatch):
     assert c.temperature == 0.0
 
 
+def test_deepseek_thinking_mode_is_provider_aware(monkeypatch):
+    monkeypatch.setenv("MYCODER_PROFILE", "deepseek")
+    monkeypatch.setenv("MYCODER_DEEPSEEK_THINKING", "disabled")
+    c = Config.from_env()
+    assert c.thinking == "disabled"
+    assert c.tool_dialect == "zcode"
+
+
 def test_openrouter_config_from_provider_env(monkeypatch):
     monkeypatch.setenv("MYCODER_PROVIDER", "OpenRouter")
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -71,6 +98,7 @@ def test_openrouter_config_from_provider_env(monkeypatch):
     assert c.api_key == "or-key"
     assert c.base_url == "https://openrouter.ai/api/v1"
     assert c.model == "minimax/minimax-m3:free"
+    assert c.tool_dialect == "auto"
 
 
 def test_provider_profile_ignores_stale_generic_model_and_endpoint(monkeypatch):
@@ -114,7 +142,7 @@ def test_auto_model_value_uses_detected_provider_default(monkeypatch):
 
     c = Config.from_env()
 
-    assert c.model == "deepseek-chat"
+    assert c.model == "deepseek-flash"
 
 
 def test_cli_accepts_provider_profile(monkeypatch):
@@ -144,7 +172,7 @@ def test_deepseek_is_detected_from_compatible_base_url(monkeypatch):
 
     assert c.provider == "deepseek"
     assert c.api_key == "legacy-compatible-key"
-    assert c.model == "deepseek-chat"
+    assert c.model == "deepseek-flash"
 
 
 def test_openrouter_optional_attribution_headers(monkeypatch):
@@ -161,6 +189,65 @@ def test_openrouter_optional_attribution_headers(monkeypatch):
         "HTTP-Referer": "https://example.test",
         "X-OpenRouter-Title": "CoreCoder",
     }
+
+
+def test_llm_provider_timeout_is_configurable_and_bounded(monkeypatch):
+    from unittest.mock import patch
+
+    from mycoder.llm import LLM
+
+    monkeypatch.setenv("MYCODER_LLM_TIMEOUT_SECONDS", "45")
+    with patch("mycoder.llm.OpenAI") as openai:
+        LLM(model="m", api_key="k")
+    assert openai.call_args.kwargs["timeout"] == 45.0
+
+    monkeypatch.setenv("MYCODER_LLM_TIMEOUT_SECONDS", "9999")
+    with patch("mycoder.llm.OpenAI") as openai:
+        LLM(model="m", api_key="k")
+    assert openai.call_args.kwargs["timeout"] == 600.0
+
+
+def test_llm_rejects_projected_over_budget_call_before_provider(monkeypatch):
+    from types import SimpleNamespace
+
+    import pytest
+    from structlog.contextvars import bound_contextvars
+
+    from mycoder.llm import LLM
+    from mycoder.observability.budget import TokenBudgetExceeded, TokenBudgetGuard
+    from mycoder.observability.trace import LLMTracer
+
+    tracer = LLMTracer()
+    guard = TokenBudgetGuard(max_tokens_per_session=100, tracer=tracer)
+    tracer.register_budget_guard("projected", guard)
+    llm = LLM(model="m", api_key="k", tracer=tracer, max_tokens=256)
+    called = False
+
+    def _provider(**_kwargs):
+        nonlocal called
+        called = True
+        return iter(())
+
+    llm.client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=_provider)))
+    with bound_contextvars(session_id="projected"):
+        with pytest.raises(TokenBudgetExceeded):
+            llm.chat([{"role": "user", "content": "x" * 600}])
+
+    assert called is False
+
+
+def test_projected_budget_uses_bounded_tool_call_output_margin(monkeypatch):
+    from types import SimpleNamespace
+
+    from mycoder.llm import _projected_request_tokens
+
+    monkeypatch.delenv("MYCODER_BUDGET_PROJECTION_OUTPUT_TOKENS", raising=False)
+    llm = SimpleNamespace(extra={"max_tokens": 4096})
+    messages = [{"role": "user", "content": "inspect and verify the patch"}]
+
+    projected = _projected_request_tokens(llm, messages, None)
+    assert projected < estimate_tokens(messages) + 4096
+    assert projected >= 1024
 
 
 # --- Context ---
@@ -195,6 +282,112 @@ def test_context_compress():
     after = estimate_tokens(msgs)
     assert after < before
     assert len(msgs) < 40  # should be compressed
+
+
+def test_action_compaction_keeps_task_and_recent_tool_pair():
+    ctx = ContextManager(max_tokens=32_000)
+    messages = [{"role": "user", "content": "fix original bug " + "x" * 2000}]
+    for index in range(8):
+        messages.extend(
+            [
+                {
+                    "role": "assistant",
+                    "content": "exploring " + "y" * 500,
+                    "tool_calls": [{"id": f"c{index}", "name": "read_file"}],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": f"c{index}",
+                    "content": "evidence " + "z" * 1200,
+                },
+            ]
+        )
+    before = estimate_tokens(messages)
+
+    assert ctx.compact_for_action(messages, keep_recent=4) is True
+    assert estimate_tokens(messages) < before
+    assert "fix original bug" in messages[0]["content"]
+    assert messages[-1]["role"] == "tool"
+    assert messages[-2]["role"] == "assistant"
+
+
+def test_action_compaction_preserves_thinking_history_for_tool_rounds():
+    """Provider-private reasoning must not be replaced by a prose summary."""
+    ctx = ContextManager(max_tokens=32_000)
+    messages = [
+        {"role": "user", "content": "fix it"},
+        {
+            "role": "assistant",
+            "content": None,
+            "reasoning_content": "inspect before editing",
+            "tool_calls": [{"id": "c1", "name": "read_file"}],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "evidence"},
+    ]
+    messages.extend(
+        {"role": "user", "content": f"follow-up {i}"} for i in range(8)
+    )
+
+    before = list(messages)
+    assert ctx.compact_for_action(messages, keep_recent=2) is False
+    assert messages == before
+
+
+def test_context_compression_does_not_drop_reasoning_content():
+    ctx = ContextManager(max_tokens=1000)
+    msgs = [
+        {"role": "user", "content": "task"},
+        {
+            "role": "assistant",
+            "content": None,
+            "reasoning_content": "think",
+            "tool_calls": [{"id": "c1"}],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "x" * 3000},
+        *({"role": "user", "content": f"turn {i}"} for i in range(12)),
+    ]
+    before_reasoning = msgs[1]["reasoning_content"]
+    ctx.maybe_compress(msgs, None)
+    assert any(m.get("reasoning_content") == before_reasoning for m in msgs)
+
+
+def test_context_compression_keeps_empty_reasoning_field_for_thinking_turn():
+    ctx = ContextManager(max_tokens=1000)
+    msgs = [
+        {"role": "user", "content": "task"},
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "",
+            "tool_calls": [{"id": "c1"}],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "x" * 3000},
+        *({"role": "user", "content": f"turn {i}"} for i in range(12)),
+    ]
+    before = list(msgs)
+    ctx.maybe_compress(msgs, None)
+    assert any("reasoning_content" in m for m in msgs)
+    assert msgs[1] == before[1]
+
+
+def test_action_compaction_snips_large_one_line_tool_output_without_dropping_reasoning():
+    ctx = ContextManager(max_tokens=32_000)
+    messages = [
+        {"role": "user", "content": "fix it"},
+        {
+            "role": "assistant",
+            "content": None,
+            "reasoning_content": "inspect before editing",
+            "tool_calls": [{"id": "c1", "name": "read_file"}],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "x" * 5000},
+        {"role": "user", "content": "continue"},
+        {"role": "assistant", "content": "still working"},
+        {"role": "user", "content": "make the edit"},
+    ]
+    assert ctx.compact_for_action(messages, keep_recent=2) is True
+    assert messages[1]["reasoning_content"] == "inspect before editing"
+    assert len(messages[2]["content"]) < 1500
 
 
 def test_safe_split_never_orphans_a_tool_message():
@@ -498,3 +691,180 @@ def test_openrouter_reasoning_tokens_are_read_from_final_stream_chunk():
     assert response.reasoning_tokens == 4
     assert response.completion_tokens == 7
     assert llm.total_reasoning_tokens == 4
+
+
+def test_required_tool_choice_is_forwarded_and_provider_fallback_is_bounded():
+    import httpx
+    from openai import BadRequestError
+
+    from mycoder.llm import LLM
+
+    calls = []
+
+    def fake_call(params):
+        calls.append(dict(params))
+        if len(calls) < 3:
+            raise BadRequestError(
+                "unsupported parameter",
+                response=httpx.Response(
+                    400,
+                    request=httpx.Request("POST", "https://provider.invalid/chat"),
+                ),
+                body=None,
+            )
+        return iter(())
+
+    llm = LLM(model="deepseek-flash", api_key="k", provider="openrouter")
+    llm._call_with_retry = fake_call
+    tools = [{"type": "function", "function": {"name": "edit_file"}}]
+
+    llm.chat(
+        [{"role": "user", "content": "edit now"}],
+        tools=tools,
+        tool_choice="required",
+    )
+
+    assert calls[0]["tool_choice"] == "required"
+    assert "stream_options" not in calls[1]
+    assert calls[1]["tool_choice"] == "required"
+    assert "tool_choice" not in calls[2]
+    assert len(calls) == 3
+
+
+def test_strict_tool_choice_never_silently_degrades():
+    import httpx
+    from openai import BadRequestError
+
+    from mycoder.llm import LLM, ToolChoiceCapabilityError
+
+    calls = []
+
+    def fake_call(params):
+        calls.append(dict(params))
+        raise BadRequestError(
+            "unsupported tool choice",
+            response=httpx.Response(
+                400,
+                request=httpx.Request("POST", "https://provider.invalid/chat"),
+            ),
+            body=None,
+        )
+
+    llm = LLM(model="deepseek-flash", api_key="k", provider="openrouter")
+    llm._call_with_retry = fake_call
+    with pytest.raises(ToolChoiceCapabilityError):
+        llm.chat(
+            [{"role": "user", "content": "edit now"}],
+            tools=[{"type": "function", "function": {"name": "edit_file"}}],
+            tool_choice="required",
+            strict_tool_choice=True,
+        )
+    assert len(calls) == 2
+    assert all("tool_choice" in call for call in calls)
+
+
+def test_provider_request_timeout_and_retry_budget_are_forwarded():
+    from mycoder.llm import LLM
+
+    observed = {}
+
+    def fake_call(params, max_retries=3):
+        observed["params"] = dict(params)
+        observed["max_retries"] = max_retries
+        return iter(())
+
+    llm = LLM(model="deepseek-flash", api_key="k", provider="deepseek")
+    llm._call_with_retry = fake_call
+
+    llm.chat(
+        [{"role": "user", "content": "plan"}],
+        timeout_seconds=12.5,
+        request_max_retries=1,
+    )
+
+    assert observed["params"]["timeout"] == 12.5
+    assert observed["max_retries"] == 1
+
+
+def test_deepseek_reasoning_content_is_preserved_for_next_tool_round():
+    """Thinking-mode tool calls must replay their reasoning on the next request."""
+    from mycoder.llm import LLM
+
+    class _F:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+    tool_delta = _F(
+        index=0,
+        id="call_1",
+        function=_F(name="read_file", arguments='{"path":"a.py"}'),
+    )
+
+    def fake_stream(_params):
+        yield _F(
+            choices=[
+                _F(
+                    delta=_F(
+                        content=None,
+                        tool_calls=[tool_delta],
+                        model_extra={"reasoning_content": "inspect the file first"},
+                    )
+                )
+            ],
+            usage=None,
+        )
+
+    llm = LLM(model="deepseek-flash", api_key="k", provider="deepseek")
+    llm._call_with_retry = fake_stream
+
+    response = llm.chat(
+        [{"role": "user", "content": "fix it"}],
+        tools=[{"type": "function", "function": {"name": "read_file"}}],
+    )
+
+    assert response.reasoning_content == "inspect the file first"
+    assert response.message["reasoning_content"] == "inspect the file first"
+    assert response.message["tool_calls"][0]["function"]["name"] == "read_file"
+
+
+def test_deepseek_dsml_tool_call_is_parsed_from_reasoning_channel():
+    from mycoder.llm import LLM
+
+    class _F:
+        def __init__(self, **kw):
+            self.__dict__.update(kw)
+
+    dsml = """<｜｜DSML｜｜ invoke name="edit_file">
+<｜｜DSML｜｜ parameter name="file_path" string="true">module.py</｜｜DSML｜｜ parameter>
+<｜｜DSML｜｜ parameter name="old_string" string="true">VALUE = 1</｜｜DSML｜｜ parameter>
+<｜｜DSML｜｜ parameter name="new_string" string="true">VALUE = 2</｜｜DSML｜｜ parameter>
+</｜｜DSML｜｜ invoke>"""
+
+    def fake_stream(_params):
+        yield _F(
+            choices=[
+                _F(
+                    delta=_F(
+                        content="I will apply the edit.",
+                        tool_calls=None,
+                        model_extra={"reasoning_content": dsml},
+                    )
+                )
+            ],
+            usage=None,
+        )
+
+    llm = LLM(model="deepseek-flash", api_key="k", provider="deepseek")
+    llm._call_with_retry = fake_stream
+
+    response = llm.chat(
+        [{"role": "user", "content": "fix it"}],
+        tools=[{"type": "function", "function": {"name": "edit_file"}}],
+    )
+
+    assert response.tool_calls[0].name == "edit_file"
+    assert response.tool_calls[0].arguments == {
+        "file_path": "module.py",
+        "old_string": "VALUE = 1",
+        "new_string": "VALUE = 2",
+    }

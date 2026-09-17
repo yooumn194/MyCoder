@@ -7,6 +7,7 @@ the optional rate limiter. The tracer / dependency overrides are reset per test.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -24,6 +25,11 @@ from api.state_backend import (  # noqa: E402
     create_state_backend,
 )
 from api.auth import scope_session_id  # noqa: E402
+from mycoder.sandbox.executor import (  # noqa: E402
+    VERIFY_FAILED,
+    VERIFY_PASSED,
+    VerifyOutcome,
+)
 
 
 # ------------------------------------------------------------ state backend
@@ -124,6 +130,7 @@ def test_local_backend_session_and_blackboard_crud(tmp_path):
     import asyncio
 
     backend = LocalStateBackend(project_dir=tmp_path / "proj")
+
     async def _run():
         assert await backend.get_session("s1") is None
         await backend.save_session("s1", {"status": "running"})
@@ -261,10 +268,14 @@ def test_api_key_auth_and_cross_tenant_session_isolation(client, monkeypatch):
     backend = app.dependency_overrides[server.get_state_backend]()
     public_id = "same-id"
     backend.sessions[scope_session_id("tenant-a", public_id)] = {
-        "tenant_id": "tenant-a", "public_session_id": public_id, "status": "success"
+        "tenant_id": "tenant-a",
+        "public_session_id": public_id,
+        "status": "success",
     }
     backend.sessions[scope_session_id("tenant-b", public_id)] = {
-        "tenant_id": "tenant-b", "public_session_id": public_id, "status": "failed"
+        "tenant_id": "tenant-b",
+        "public_session_id": public_id,
+        "status": "failed",
     }
 
     assert client.get(f"/v1/agent/status/{public_id}").status_code == 401
@@ -275,9 +286,7 @@ def test_api_key_auth_and_cross_tenant_session_isolation(client, monkeypatch):
     )
     assert a.json()["status"] == "success"
     assert b.json()["status"] == "failed"
-    assert client.get(
-        f"/v1/agent/status/{public_id}", headers={"X-API-Key": "wrong"}
-    ).status_code == 401
+    assert client.get(f"/v1/agent/status/{public_id}", headers={"X-API-Key": "wrong"}).status_code == 401
 
 
 def test_metrics_are_tenant_scoped(client, monkeypatch):
@@ -323,9 +332,7 @@ def test_sse_returns_structured_terminal_snapshot(client):
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
     assert "event: completed" in response.text
-    data_line = next(
-        line for line in response.text.splitlines() if line.startswith("data: ")
-    )
+    data_line = next(line for line in response.text.splitlines() if line.startswith("data: "))
     payload = json.loads(data_line.removeprefix("data: "))
     assert payload["output"] == "answer"
     assert payload["token_usage"] == 42
@@ -356,7 +363,7 @@ class _FakeOrchestrator:
 
 def test_run_schedules_and_background_completes(client, monkeypatch):
     monkeypatch.setattr(server, "get_default_llm", lambda: object())
-    monkeypatch.setattr(server, "get_orchestrator", lambda sb: (lambda sid, **kw: _FakeOrchestrator()))
+    monkeypatch.setattr(server, "get_orchestrator", lambda sb: lambda sid, **kw: _FakeOrchestrator())
 
     r = client.post("/v1/agent/run", json={"task": "写个函数", "session_id": "s-run"})
     assert r.status_code == 202
@@ -368,6 +375,175 @@ def test_run_schedules_and_background_completes(client, monkeypatch):
     assert st.status_code == 200
     assert st.json()["status"] == "success"
     assert st.json()["output"] == "ok"
+
+
+def test_run_uses_trace_tokens_as_authoritative_usage(client, monkeypatch):
+    monkeypatch.setattr(server, "get_default_llm", lambda: object())
+    monkeypatch.setattr(server, "get_orchestrator", lambda sb: lambda sid, **kw: _FakeOrchestrator())
+    monkeypatch.setattr(
+        server,
+        "_session_perf",
+        lambda _sid: {"total_tokens": 1234, "llm_calls": 2},
+    )
+
+    response = client.post(
+        "/v1/agent/run",
+        json={"task": "写个函数", "session_id": "trace-token-source"},
+    )
+    status = client.get("/v1/agent/status/trace-token-source").json()
+
+    assert response.status_code == 202
+    assert status["token_usage"] == 1234
+    assert status["perf"]["total_tokens"] == 1234
+
+
+@pytest.mark.asyncio
+async def test_benchmark_verification_is_harness_owned(monkeypatch):
+    """P0-4: when a verify command is configured the harness runs it and reads
+    the exit code, instead of trusting that the model ran a check."""
+    executed: list[tuple[str, int]] = []
+
+    class _Manager:
+        async def verify(self, command, timeout):
+            executed.append((command, timeout))
+            return VerifyOutcome(status=VERIFY_FAILED, evidence="exit_code=1\n1 failed", command=command)
+
+    monkeypatch.setenv("MYCODER_BENCHMARK_VERIFY_CMD", "./run_tests.sh")
+    monkeypatch.setenv("MYCODER_BENCHMARK_VERIFY_TIMEOUT", "42")
+
+    verdict = await server._enforce_benchmark_verification(_Manager(), object())
+
+    assert executed == [("./run_tests.sh", 42)]
+    # A red verdict is RECORDED, not raised: an unsolved instance is data, not
+    # a broken run, and the official evaluator scores the patch anyway.
+    assert verdict == {
+        "command": "./run_tests.sh",
+        "status": VERIFY_FAILED,
+        "passed": False,
+        "evidence": "exit_code=1\n1 failed",
+    }
+
+
+@pytest.mark.asyncio
+async def test_benchmark_verification_pass_records_green(monkeypatch):
+    class _Manager:
+        async def verify(self, command, timeout):
+            return VerifyOutcome(status=VERIFY_PASSED, evidence="exit_code=0", command=command)
+
+    monkeypatch.setenv("MYCODER_BENCHMARK_VERIFY_CMD", "pytest -q")
+    # No agent evidence at all — the harness verdict is what counts.
+    verdict = await server._enforce_benchmark_verification(_Manager(), object())
+
+    assert verdict is not None and verdict["passed"] is True
+
+
+@pytest.mark.asyncio
+async def test_per_run_verify_command_overrides_the_environment(monkeypatch):
+    executed: list[tuple[str, int]] = []
+
+    class _Manager:
+        async def verify(self, command, timeout):
+            executed.append((command, timeout))
+            return VerifyOutcome(status=VERIFY_PASSED, evidence="exit_code=0", command=command)
+
+    monkeypatch.setenv("MYCODER_BENCHMARK_VERIFY_CMD", "pytest -q")
+    monkeypatch.setenv("MYCODER_BENCHMARK_VERIFY_TIMEOUT", "600")
+
+    await server._enforce_benchmark_verification(
+        _Manager(), object(), verify_cmd="./run_tests.sh", verify_timeout=42
+    )
+
+    assert executed == [("./run_tests.sh", 42)]
+
+
+@pytest.mark.asyncio
+async def test_benchmark_verification_without_a_command_is_a_gate(monkeypatch):
+    """No command -> the run certifies itself, and that stays a gate: the only
+    alternative is reporting unverified work as success."""
+    monkeypatch.delenv("MYCODER_BENCHMARK_VERIFY_CMD", raising=False)
+
+    class _Agent:
+        verification_evidence = [{"succeeded": False}]
+
+    with pytest.raises(server.PatchRequired, match="without a harness verification command"):
+        await server._enforce_benchmark_verification(None, _Agent())
+
+    class _PassingAgent:
+        verification_evidence = [{"succeeded": True}]
+
+    assert await server._enforce_benchmark_verification(None, _PassingAgent()) is None
+
+
+@pytest.mark.asyncio
+async def test_benchmark_sandbox_is_materialized_before_agent_edits():
+    class _Backend:
+        started = False
+
+        async def start(self):
+            self.started = True
+
+    class _Manager:
+        backend = _Backend()
+
+        async def get(self):
+            return self.backend
+
+    manager = _Manager()
+
+    await server._start_benchmark_sandbox(manager)
+
+    assert manager.backend.started is True
+
+
+def test_benchmark_policy_requires_explicit_server_opt_in(client, monkeypatch):
+    monkeypatch.setattr(server, "get_default_llm", lambda: object())
+    monkeypatch.setattr(server, "resolve_workspace", lambda *_args: Path.cwd())
+    monkeypatch.delenv("MYCODER_ENABLE_BENCHMARK_POLICY", raising=False)
+
+    response = client.post(
+        "/v1/agent/run",
+        json={"task": "fix", "workspace_id": "swe-case", "sandbox_policy": "benchmark"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_benchmark_policy_propagates_patch_and_budget_contract(client, monkeypatch):
+    orchestrator = _FakeOrchestrator()
+    build_kwargs = {}
+
+    def builder(_sid, **kwargs):
+        build_kwargs.update(kwargs)
+        return orchestrator
+
+    monkeypatch.setenv("MYCODER_ENABLE_BENCHMARK_POLICY", "true")
+    monkeypatch.setenv("MYCODER_REQUIRE_AUTH", "false")
+    monkeypatch.setattr(server, "resolve_workspace", lambda *_args: Path.cwd())
+    monkeypatch.setattr(server, "get_default_llm", lambda: object())
+    monkeypatch.setattr(server, "get_orchestrator", lambda sb: builder)
+
+    response = client.post(
+        "/v1/agent/run",
+        json={
+            "task": "fix",
+            "session_id": "bench-policy",
+            "workspace_id": "swe-case",
+            "max_tokens": 35_000,
+            "soft_budget_ratio": 20_000 / 35_000,
+            "sandbox_policy": "benchmark",
+        },
+    )
+
+    assert response.status_code == 202
+    assert build_kwargs["sandbox_policy"] == "benchmark"
+    assert build_kwargs["sandbox_image"] is None
+    assert build_kwargs["sandbox_user"] == "sandbox"
+    assert build_kwargs["soft_budget_ratio"] == pytest.approx(20_000 / 35_000)
+    assert orchestrator.kwargs["parent_context"]["require_patch"] is True
+    assert orchestrator.kwargs["parent_context"]["require_verification"] is True
+    # Recorded, not enforced: the agent no longer sends a provider tool_choice,
+    # so this flag only says which contract applied to the run.
+    assert orchestrator.kwargs["parent_context"]["strict_tool_choice"] is True
 
 
 def test_run_exposes_single_reasoning_ablation_mode(client, monkeypatch):
@@ -388,9 +564,7 @@ def test_run_exposes_single_reasoning_ablation_mode(client, monkeypatch):
     orchestrator.tools = []
     monkeypatch.setattr(agent_module, "Agent", _SingleAgent)
     monkeypatch.setattr(server, "get_default_llm", lambda: object())
-    monkeypatch.setattr(
-        server, "get_orchestrator", lambda sb: (lambda sid, **kw: orchestrator)
-    )
+    monkeypatch.setattr(server, "get_orchestrator", lambda sb: lambda sid, **kw: orchestrator)
 
     response = client.post(
         "/v1/agent/run",
@@ -406,12 +580,220 @@ def test_run_exposes_single_reasoning_ablation_mode(client, monkeypatch):
     assert captured["task"] == "ablation"
 
 
+def test_benchmark_single_mode_requires_mutation_and_verification(client, monkeypatch):
+    import mycoder.agent as agent_module
+
+    captured = {}
+
+    class _SingleAgent:
+        verification_evidence = [{"succeeded": True}]
+
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def chat(self, task):
+            return "done"
+
+    orchestrator = _FakeOrchestrator()
+    orchestrator.llm = object()
+    orchestrator.tools = []
+    monkeypatch.setattr(agent_module, "Agent", _SingleAgent)
+    monkeypatch.setattr(server, "get_default_llm", lambda: object())
+    monkeypatch.setattr(server, "get_orchestrator", lambda sb: lambda sid, **kw: orchestrator)
+    monkeypatch.setenv("MYCODER_ENABLE_BENCHMARK_POLICY", "true")
+    monkeypatch.setenv("MYCODER_REQUIRE_AUTH", "false")
+    monkeypatch.setattr(server, "resolve_workspace", lambda *_args: Path.cwd())
+
+    response = client.post(
+        "/v1/agent/run",
+        json={
+            "task": "fix",
+            "session_id": "single-benchmark",
+            "workspace_id": "swe-case",
+            "execution_mode": "single",
+            "sandbox_policy": "benchmark",
+        },
+    )
+
+    assert response.status_code == 202
+    assert captured["require_mutation"] is True
+    assert captured["require_verification"] is True
+    # See test_benchmark_policy_propagates_patch_and_budget_contract: recorded
+    # for tracing, not a tool_choice lock.
+    assert captured["strict_tool_choice"] is True
+
+
+def test_harness_verify_command_is_benchmark_only(client, monkeypatch):
+    """A per-run verification command must not become a way for an interactive
+    caller to make the server execute arbitrary commands on its behalf."""
+    monkeypatch.setattr(server, "get_default_llm", lambda: object())
+    monkeypatch.setattr(server, "resolve_workspace", lambda *_args: Path.cwd())
+
+    response = client.post(
+        "/v1/agent/run",
+        json={"task": "fix", "benchmark_verify_cmd": "pytest -q"},
+    )
+
+    assert response.status_code == 400
+    assert "benchmark" in response.json()["detail"]
+
+
+def test_harness_verify_command_rejects_a_timeout_without_a_command(client, monkeypatch):
+    monkeypatch.setenv("MYCODER_ENABLE_BENCHMARK_POLICY", "true")
+    monkeypatch.setenv("MYCODER_REQUIRE_AUTH", "false")
+    monkeypatch.setattr(server, "get_default_llm", lambda: object())
+    monkeypatch.setattr(server, "resolve_workspace", lambda *_args: Path.cwd())
+
+    response = client.post(
+        "/v1/agent/run",
+        json={
+            "task": "fix",
+            "workspace_id": "swe-case",
+            "sandbox_policy": "benchmark",
+            "benchmark_verify_timeout": 30,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "benchmark_verify_timeout requires benchmark_verify_cmd" in response.json()["detail"]
+
+
+def test_harness_verify_command_reaches_the_sandbox_from_a_request(client, monkeypatch):
+    """The full path: HTTP field -> job payload -> metadata -> manager.verify."""
+    import mycoder.agent as agent_module
+
+    executed: list[tuple[str, int]] = []
+
+    class _Manager:
+        project_dir = Path.cwd()
+
+        def __init__(self):
+            self.restore_points = 0
+
+        def capture_restore_point(self):
+            self.restore_points += 1
+            return _RestorePoint()
+
+        async def verify(self, command, timeout):
+            executed.append((command, timeout))
+            return VerifyOutcome(status=VERIFY_PASSED, evidence="exit_code=0", command=command)
+
+        async def stop(self):
+            return None
+
+    class _SingleAgent:
+        verification_evidence: list = []
+
+        def __init__(self, **_kwargs):
+            pass
+
+        def chat(self, _task):
+            return "done"
+
+    async def _no_start(_manager):
+        return None
+
+    orchestrator = _FakeOrchestrator()
+    orchestrator.llm = object()
+    orchestrator.tools = []
+    orchestrator._sandbox_manager = _Manager()
+    manager = orchestrator._sandbox_manager
+    monkeypatch.setattr(agent_module, "Agent", _SingleAgent)
+    monkeypatch.setattr(server, "_start_benchmark_sandbox", _no_start)
+    monkeypatch.setattr(server, "get_default_llm", lambda: object())
+    monkeypatch.setattr(server, "get_orchestrator", lambda sb: lambda sid, **kw: orchestrator)
+    monkeypatch.setenv("MYCODER_ENABLE_BENCHMARK_POLICY", "true")
+    monkeypatch.setenv("MYCODER_REQUIRE_AUTH", "false")
+    monkeypatch.delenv("MYCODER_BENCHMARK_VERIFY_CMD", raising=False)
+    monkeypatch.setattr(server, "resolve_workspace", lambda *_args: Path.cwd())
+    monkeypatch.setattr(server, "_workspace_has_repository_changes", _has_changes)
+
+    response = client.post(
+        "/v1/agent/run",
+        json={
+            "task": "fix",
+            "session_id": "harness-verify",
+            "workspace_id": "swe-case",
+            "execution_mode": "single",
+            "sandbox_policy": "benchmark",
+            "benchmark_verify_cmd": "./run_tests.sh",
+            "benchmark_verify_timeout": 42,
+        },
+    )
+
+    assert response.status_code == 202
+    assert executed == [("./run_tests.sh", 42)]
+    # P0-1: the mount is the real checkout, so the run records a restore point
+    # before the agent's first command can touch it.
+    assert manager.restore_points == 1
+    # The verdict is stored with the session, where a caller can see whether the
+    # run's "verified" came from the harness or from the model's own report.
+    status = client.get("/v1/agent/status/harness-verify").json()
+    assert status["harness_verification"]["passed"] is True
+    assert status["harness_verification"]["command"] == "./run_tests.sh"
+
+
+def test_harness_verify_command_also_runs_in_multi_mode(client, monkeypatch):
+    """The verdict is about the WORKSPACE, which is the same checkout in both
+    modes — leaving it single-mode-only made the field a silent no-op exactly
+    where the SWE-bench adapter defaults to."""
+    executed: list[tuple[str, int]] = []
+
+    class _Manager:
+        project_dir = Path.cwd()
+
+        def capture_restore_point(self):
+            return None
+
+        async def verify(self, command, timeout):
+            executed.append((command, timeout))
+            return VerifyOutcome(status=VERIFY_PASSED, evidence="exit_code=0", command=command)
+
+        async def stop(self):
+            return None
+
+    async def _no_start(_manager):
+        return None
+
+    orchestrator = _FakeOrchestrator()
+    orchestrator._sandbox_manager = _Manager()
+    monkeypatch.setattr(server, "_start_benchmark_sandbox", _no_start)
+    monkeypatch.setattr(server, "get_default_llm", lambda: object())
+    monkeypatch.setattr(server, "get_orchestrator", lambda sb: lambda sid, **kw: orchestrator)
+    monkeypatch.setenv("MYCODER_ENABLE_BENCHMARK_POLICY", "true")
+    monkeypatch.setenv("MYCODER_REQUIRE_AUTH", "false")
+    monkeypatch.setattr(server, "resolve_workspace", lambda *_args: Path.cwd())
+    monkeypatch.setattr(server, "_workspace_has_repository_changes", _has_changes)
+
+    response = client.post(
+        "/v1/agent/run",
+        json={
+            "task": "fix",
+            "session_id": "harness-verify-multi",
+            "workspace_id": "swe-case",
+            "execution_mode": "multi",
+            "sandbox_policy": "benchmark",
+            "benchmark_verify_cmd": "./run_tests.sh",
+        },
+    )
+
+    assert response.status_code == 202
+    assert executed == [("./run_tests.sh", 600)]
+
+
+class _RestorePoint:
+    def as_metadata(self):
+        return {"head": "a" * 40, "stash": None, "ref": None}
+
+
+async def _has_changes(_root):
+    return True
+
+
 def test_run_passes_explicit_multi_orchestration_strategy(client, monkeypatch):
     orchestrator = _FakeOrchestrator()
     monkeypatch.setattr(server, "get_default_llm", lambda: object())
-    monkeypatch.setattr(
-        server, "get_orchestrator", lambda sb: (lambda sid, **kw: orchestrator)
-    )
+    monkeypatch.setattr(server, "get_orchestrator", lambda sb: lambda sid, **kw: orchestrator)
     response = client.post(
         "/v1/agent/run",
         json={
@@ -435,9 +817,7 @@ def test_resume_reuses_checkpoint_plan_and_marks_status(client, monkeypatch):
     )
     orchestrator = _FakeOrchestrator()
     monkeypatch.setattr(server, "get_default_llm", lambda: object())
-    monkeypatch.setattr(
-        server, "get_orchestrator", lambda sb: (lambda sid, **kw: orchestrator)
-    )
+    monkeypatch.setattr(server, "get_orchestrator", lambda sb: lambda sid, **kw: orchestrator)
 
     response = client.post(
         "/v1/agent/run",
@@ -492,7 +872,7 @@ def test_failed_resume_keeps_checkpoint_progress(client, monkeypatch):
     monkeypatch.setattr(
         server,
         "get_orchestrator",
-        lambda sb: (lambda sid, **kw: _FakeOrchestrator(_FailedResult())),
+        lambda sb: lambda sid, **kw: _FakeOrchestrator(_FailedResult()),
     )
 
     response = client.post(
@@ -516,9 +896,7 @@ def test_active_session_cannot_be_started_twice(client, monkeypatch):
     monkeypatch.setattr(server, "get_default_llm", lambda: object())
     server._ACTIVE_SESSIONS.add("s-active")  # noqa: SLF001
     try:
-        response = client.post(
-            "/v1/agent/run", json={"task": "x", "session_id": "s-active"}
-        )
+        response = client.post("/v1/agent/run", json={"task": "x", "session_id": "s-active"})
     finally:
         server._ACTIVE_SESSIONS.discard("s-active")  # noqa: SLF001
     assert response.status_code == 409
@@ -559,11 +937,40 @@ def test_worker_dead_letters_after_max_attempts(tmp_path, monkeypatch):
     asyncio.run(_run())
 
 
+def test_worker_cancellation_dead_letters_instead_of_requeueing(tmp_path, monkeypatch):
+    """Shutdown cancellation must not leave a job queued for replay."""
+    import asyncio
+
+    backend = _DictBackend()
+    store = CheckpointStore(tmp_path / "checkpoints")
+    payload = {
+        "session_id": "cancelled",
+        "public_session_id": "cancelled",
+        "tenant_id": "local",
+        "workspace_id": "default",
+        "task": "wait",
+    }
+
+    async def cancel(*_args, **_kwargs):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(server, "_run_agent", cancel)
+
+    async def _run():
+        await backend.enqueue_job("cancelled", payload)
+        await backend.save_session("cancelled", {"status": "running"})
+        with pytest.raises(asyncio.CancelledError):
+            await server._process_job_id(backend, store, "cancelled", "w1")
+        assert "cancelled" not in backend.jobs
+        assert backend.dead_jobs[0]["job_id"] == "cancelled"
+        assert backend.sessions["cancelled"]["error"]["code"] == "TASK_CANCELLED"
+
+    asyncio.run(_run())
+
+
 def test_dead_letter_endpoint_is_observable(client):
     backend = app.dependency_overrides[server.get_state_backend]()
-    backend.dead_jobs.append(
-        {"job_id": "d1", "payload": {"tenant_id": None}, "attempts": 3}
-    )
+    backend.dead_jobs.append({"job_id": "d1", "payload": {"tenant_id": None}, "attempts": 3})
     response = client.get("/v1/agent/dead-letter")
     assert response.status_code == 200
     assert response.json()["jobs"][0]["job_id"] == "d1"
@@ -588,6 +995,59 @@ def test_cost_endpoint(client):
     assert client.get("/v1/agent/cost/never").status_code == 404
 
 
+def test_tool_trace_endpoint_reads_redacted_persisted_timeline(client):
+    import api.dependencies as dependencies
+
+    tracer = dependencies.get_tool_tracer()
+    tracer.record_requirement_feedback("s-tools", "mutation required", attempt=1, phase="inspect")
+    tracer.record(
+        "s-tools",
+        "tool-1",
+        "edit_file",
+        {"file_path": "app.py", "api_key": "sk-secret"},
+        "Edited app.py",
+        status="success",
+        mutation=True,
+    )
+    dependencies.reset_observability_runtime()
+
+    response = client.get("/v1/agent/tool-traces/s-tools")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"]["calls"] == 1
+    assert body["summary"]["mutations"] == 1
+    assert body["summary"]["requirement_misses"] == 1
+    assert body["traces"][1]["arguments"]["api_key"] == "[REDACTED]"
+    assert "sk-secret" not in response.text
+    assert client.get("/v1/agent/tool-traces/never").status_code == 404
+
+
+def test_tool_trace_endpoint_is_tenant_scoped(client, monkeypatch):
+    import api.dependencies as dependencies
+
+    monkeypatch.setenv("MYCODER_API_KEYS", '{"tenant-a":"ka","tenant-b":"kb"}')
+    backend = app.dependency_overrides[server.get_state_backend]()
+    session_a = scope_session_id("tenant-a", "shared")
+    session_b = scope_session_id("tenant-b", "shared")
+    backend.sessions[session_a] = {"tenant_id": "tenant-a", "status": "failed"}
+    backend.sessions[session_b] = {"tenant_id": "tenant-b", "status": "failed"}
+    tracer = dependencies.get_tool_tracer()
+    tracer.record(session_a, "a", "read_file", {}, "a", status="success")
+    tracer.record(session_b, "b", "edit_file", {}, "b", status="success")
+
+    response = client.get(
+        "/v1/agent/tool-traces/shared",
+        headers={"X-API-Key": "ka"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["session_id"] == "shared"
+    assert [trace["tool_name"] for trace in body["traces"]] == ["read_file"]
+    assert all(trace["session_id"] == "shared" for trace in body["traces"])
+
+
 def test_token_budget_handler_returns_429():
     import asyncio
 
@@ -603,7 +1063,7 @@ def test_rate_limiter_429_on_breach(client, monkeypatch):
     from mycoder.observability.ratelimit import RateLimiter
 
     monkeypatch.setattr(server, "get_default_llm", lambda: object())
-    monkeypatch.setattr(server, "get_orchestrator", lambda sb: (lambda sid, **kw: _FakeOrchestrator()))
+    monkeypatch.setattr(server, "get_orchestrator", lambda sb: lambda sid, **kw: _FakeOrchestrator())
     monkeypatch.setattr(server, "RATE_LIMITER", RateLimiter(requests_per_minute=1))
 
     assert client.post("/v1/agent/run", json={"task": "t1"}).status_code == 202
@@ -664,9 +1124,7 @@ def test_alert_history_endpoint_reads_persisted_store(client):
     from mycoder.observability.alerts import AlertRule
 
     manager = dependencies.get_alert_manager()
-    manager.rules = [
-        AlertRule("latency", "p95_duration_ms", 100, op=">", cooldown_seconds=60)
-    ]
+    manager.rules = [AlertRule("latency", "p95_duration_ms", 100, op=">", cooldown_seconds=60)]
     assert manager.evaluate("s-alert", {"p95_duration_ms": 200})
 
     # Rebuild every process-local wrapper; persisted history must remain.
@@ -691,9 +1149,7 @@ def test_alert_history_is_tenant_scoped(client, monkeypatch):
     backend.sessions[session_b] = {"tenant_id": "tenant-b", "status": "success"}
 
     manager = dependencies.get_alert_manager()
-    manager.rules = [
-        AlertRule("latency", "p95_duration_ms", 100, op=">", cooldown_seconds=60)
-    ]
+    manager.rules = [AlertRule("latency", "p95_duration_ms", 100, op=">", cooldown_seconds=60)]
     assert manager.evaluate(session_a, {"p95_duration_ms": 200})
     assert manager.evaluate(session_b, {"p95_duration_ms": 200})
 
@@ -713,6 +1169,6 @@ def test_monitor_report_aggregates_llm_and_runs(client):
     r = client.get("/v1/agent/report")
     assert r.status_code == 200
     body = r.json()
-    assert "llm" in body and "per_session" in body
+    assert "llm" in body and "tools" in body and "per_session" in body
     assert "generated_at" in body
     assert body["production_runs"]["success_rate"] == 1.0
