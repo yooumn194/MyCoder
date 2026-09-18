@@ -11,13 +11,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import statistics
 import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import runner
+from .stats import summarize
 from mycoder.config import Config
 
 VARIANTS: dict[str, dict[str, str]] = {
@@ -60,11 +60,7 @@ def build_plan(
 
 def _metric(records: list[dict], field: str) -> dict:
     values = [float(item[field]) for item in records if item.get(field) is not None]
-    return {
-        "mean": round(statistics.fmean(values), 4) if values else None,
-        "stddev": round(statistics.pstdev(values), 4) if values else None,
-        "n": len(values),
-    }
+    return summarize(values)
 
 
 def aggregate(plan: list[dict]) -> dict:
@@ -100,11 +96,7 @@ def aggregate(plan: list[dict]) -> dict:
         summary[variant] = {
             "samples": len(records),
             "completed_repeats": len(repetitions),
-            "pass_rate": {
-                "mean": round(statistics.fmean(pass_values), 4) if pass_values else None,
-                "stddev": round(statistics.pstdev(pass_values), 4) if pass_values else None,
-                "n": len(pass_values),
-            },
+            "pass_rate": summarize(pass_values),
             "duration_s": _metric(records, "duration_s"),
             "token_usage": _metric(records, "token_usage"),
             "failure_distribution": dict(Counter(

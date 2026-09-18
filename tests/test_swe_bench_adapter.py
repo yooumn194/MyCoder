@@ -126,6 +126,23 @@ def test_official_prediction_shape_and_harness_command(tmp_path):
     assert command[:3] == ["swebench", "eval", "verified"]
     assert command[command.index("--run-id") + 1] == "run"
     assert command[-2:] == ["--instance", "owner__repo-1"]
+    # No report-dir by default: the flag must not appear unless a caller asks.
+    assert "--report-dir" not in command
+
+
+def test_harness_command_can_anchor_the_report_directory(tmp_path):
+    command = adapter.harness_command(
+        predictions=tmp_path / "predictions.jsonl",
+        source={"dataset": "verified", "split": "test"},
+        instance_ids=["a__b-1", "c__d-2"],
+        workers=2,
+        run_id="mycoder-abc",
+        report_dir=tmp_path / "run",
+    )
+
+    # Ahead of the --instance list, so the trailing-argument shape is preserved.
+    assert command[command.index("--report-dir") + 1] == str(tmp_path / "run")
+    assert command[-2:] == ["--instance", "c__d-2"]
 
 
 def test_apple_silicon_harness_prep_uses_explicit_amd64(monkeypatch):
@@ -177,6 +194,17 @@ def test_adapter_dry_run_uses_materialized_suite(capsys):
     code = adapter.main(["--dry-run", "--limit", "1"])
 
     assert code == 0
+    assert "suite OK: 1 case" in capsys.readouterr().out
+
+
+def test_adapter_dry_run_does_not_start_verification_containers(monkeypatch, capsys):
+    monkeypatch.setattr(
+        adapter,
+        "probe_verify_runtime",
+        lambda *_args, **_kwargs: pytest.fail("dry-run must not probe Docker images"),
+    )
+
+    assert adapter.main(["--dry-run", "--limit", "1"]) == 0
     assert "suite OK: 1 case" in capsys.readouterr().out
 
 
@@ -633,3 +661,87 @@ def test_adapter_can_require_explicit_per_instance_verification(tmp_path, capsys
         )
         == 0
     )
+
+
+def test_the_harness_report_lands_in_the_run_directory_not_the_cwd(tmp_path, monkeypatch):
+    """The harness defaults --report-dir to ".", which is how a repo root ends up
+    holding one <model>.<run-id>.json per run."""
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps({"source": {"dataset": "verified", "split": "test"}, "cases": [_case()]}),
+        encoding="utf-8",
+    )
+
+    def fake_run_case(case, **_kwargs):
+        return (
+            {"instance_id": case["instance_id"], "model_name_or_path": "MyCoder", "model_patch": "diff"},
+            {"instance_id": case["instance_id"], "patch_bytes": 4, "error": None},
+        )
+
+    monkeypatch.setattr(adapter, "run_case", fake_run_case)
+    results = tmp_path / "results"
+
+    assert adapter.main(["--suite", str(suite_path), "--results", str(results)]) == 0
+    manifest = json.loads((results / "manifest.json").read_text())
+    command = manifest["official_harness_command"]
+    assert command[command.index("--report-dir") + 1] == str(results)
+    # A label, not the resolved path: a literal path would make otherwise
+    # identical repeats of one variance run compare unequal.
+    assert manifest["contract"]["harness_report_dir"] == "run_results"
+
+
+def test_an_explicit_report_directory_is_recorded_as_such(tmp_path, monkeypatch):
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps({"source": {"dataset": "verified", "split": "test"}, "cases": [_case()]}),
+        encoding="utf-8",
+    )
+
+    def fake_run_case(case, **_kwargs):
+        return (
+            {"instance_id": case["instance_id"], "model_name_or_path": "MyCoder", "model_patch": "diff"},
+            {"instance_id": case["instance_id"], "patch_bytes": 4, "error": None},
+        )
+
+    monkeypatch.setattr(adapter, "run_case", fake_run_case)
+    results = tmp_path / "results"
+    elsewhere = tmp_path / "elsewhere"
+
+    assert (
+        adapter.main(
+            ["--suite", str(suite_path), "--results", str(results), "--harness-report-dir", str(elsewhere)]
+        )
+        == 0
+    )
+    manifest = json.loads((results / "manifest.json").read_text())
+    command = manifest["official_harness_command"]
+    assert command[command.index("--report-dir") + 1] == str(elsewhere)
+    assert manifest["contract"]["harness_report_dir"] == "explicit"
+
+
+def test_the_repeated_run_resumes_only_when_the_report_directory_is_unchanged(tmp_path, monkeypatch):
+    """A changed report directory must break resume, like any other contract field."""
+    suite_path = tmp_path / "suite.json"
+    suite_path.write_text(
+        json.dumps({"source": {"dataset": "verified", "split": "test"}, "cases": [_case()]}),
+        encoding="utf-8",
+    )
+
+    def fake_run_case(case, **_kwargs):
+        return (
+            {"instance_id": case["instance_id"], "model_name_or_path": "MyCoder", "model_patch": "diff"},
+            {"instance_id": case["instance_id"], "patch_bytes": 4, "error": None},
+        )
+
+    monkeypatch.setattr(adapter, "run_case", fake_run_case)
+    results = tmp_path / "results"
+    assert adapter.main(["--suite", str(suite_path), "--results", str(results)]) == 0
+
+    assert adapter.main(["--suite", str(suite_path), "--results", str(results), "--resume"]) == 0
+    moved = adapter.main(
+        [
+            "--suite", str(suite_path), "--results", str(results),
+            "--harness-report-dir", str(tmp_path / "moved"), "--resume",
+        ]
+    )
+    assert moved == 1

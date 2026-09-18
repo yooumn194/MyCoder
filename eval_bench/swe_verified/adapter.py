@@ -498,8 +498,23 @@ def _load_predictions(path: Path) -> list[dict[str, Any]]:
 
 
 def harness_command(
-    *, predictions: Path, source: dict[str, Any], instance_ids: list[str], workers: int, run_id: str
+    *,
+    predictions: Path,
+    source: dict[str, Any],
+    instance_ids: list[str],
+    workers: int,
+    run_id: str,
+    report_dir: Path | None = None,
 ) -> list[str]:
+    """The official ``swebench eval`` invocation for one run.
+
+    ``report_dir`` pins where the harness writes its report. Left unset the
+    harness uses the current working directory, which is how a run drops
+    ``<model>.<run-id>.json`` into whatever directory the operator happened to
+    be standing in — the repository root, normally. Passing this run's results
+    directory instead keeps each report next to the predictions it describes,
+    which is also the only way a repeated run can find its own report again.
+    """
     dataset = source["dataset"]
     # swebench>=5 uses the maintained dataset, which adds executable image and
     # eval-script metadata absent from the legacy Princeton prompt dataset.
@@ -519,6 +534,11 @@ def harness_command(
         "--run-id",
         run_id,
     ]
+    if report_dir is not None:
+        # The maintained SWE-bench CLI exposes the kebab-case option.  The
+        # underscore spelling is rejected by current Typer/Click releases and
+        # would make every --evaluate run fail before grading starts.
+        command.extend(["--report-dir", str(report_dir)])
     for instance_id in instance_ids:
         command.extend(["--instance", instance_id])
     return command
@@ -585,7 +605,50 @@ _VERIFY_RUNTIME_PROBE = (
 )
 
 
-def _verification_summary(records: Sequence[dict]) -> dict[str, int]:
+def official_report_name(manifest: dict[str, Any]) -> str | None:
+    """Filename the official harness writes its report under, or None.
+
+    This mirrors ``swebench.harness.reporting.make_run_report``: the report is
+    ``<model_name_or_path with "/" replaced by "__">.<run-id>.json``. Deriving it
+    from the manifest rather than globbing means a repeated run can point at its
+    own report without mistaking a sibling repeat's file for its own.
+    """
+    contract = manifest.get("contract") or {}
+    model = contract.get("model_name_or_path")
+    run_id = manifest.get("run_id")
+    if not isinstance(model, str) or not model or not isinstance(run_id, str) or not run_id:
+        return None
+    return f"{model.replace('/', '__')}.mycoder-{run_id}.json"
+
+
+def find_official_report(run_dir: Path, manifest: dict[str, Any]) -> Path | None:
+    """Locate one run's official report inside its own results directory.
+
+    Prefers the derived filename. Falls back to a single ``*.mycoder-*.json``
+    match because the file is occasionally renamed after the fact (a grading
+    pass repeated over a subset gets a ``-partial`` suffix, for instance). Two
+    or more matches are refused rather than guessed: picking one would attribute
+    another run's verdicts to this one, which is exactly the mix-up a variance
+    report must not make.
+    """
+    expected = official_report_name(manifest)
+    if expected:
+        candidate = run_dir / expected
+        if candidate.is_file():
+            return candidate
+    matches = sorted(run_dir.glob("*.mycoder-*.json"))
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        names = ", ".join(path.name for path in matches)
+        raise AdapterError(
+            f"{run_dir} holds more than one official report ({names}); "
+            "variance cannot tell which one grades these predictions"
+        )
+    return None
+
+
+def verification_summary(records: Sequence[dict]) -> dict[str, int]:
     """Count the harness's verdicts: green, red, unavailable, self-certified.
 
     Counted by ``status`` rather than by ``passed``: ``passed`` is None for
@@ -731,6 +794,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--resume", action="store_true", help="continue an identical interrupted run")
     parser.add_argument("--evaluate", action="store_true", help="invoke the installed official SWE-bench harness")
+    parser.add_argument(
+        "--harness-report-dir",
+        type=Path,
+        default=None,
+        help=(
+            "directory the official harness writes its report to. Defaults to "
+            "this run's --results directory; the harness default is the current "
+            "working directory, which drops one report per run into the "
+            "repository root"
+        ),
+    )
     parser.add_argument("--harness-workers", type=int, default=1)
     parser.add_argument(
         "--harness-pull-timeout",
@@ -823,7 +897,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "strengthen the evidence."
             )
     runtime_probe: dict[str, bool] = {}
-    if verify_commands is not None and not args.no_verify_preflight:
+    if verify_commands is not None and not args.no_verify_preflight and not args.dry_run:
         # A configured-but-unrunnable command is worse than no command at all:
         # it looks like evidence and is not. One throwaway container per
         # distinct image answers it before the first token is spent, instead of
@@ -887,6 +961,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "soft_budget_tokens_per_turn": args.soft_budget_tokens,
         "timeout_seconds_per_turn": args.timeout_seconds,
         "harness_pull_timeout_seconds": args.harness_pull_timeout,
+        # A label rather than the resolved path: the default is this run's own
+        # results directory, so a literal path would differ between the repeats
+        # of one variance run and make otherwise-identical contracts compare
+        # unequal. Same shape as verify_commands.source below.
+        "harness_report_dir": "explicit" if args.harness_report_dir is not None else "run_results",
         "reject_test_changes": not args.allow_test_changes,
         "instance_ids": instance_ids,
         "verify_commands": (
@@ -938,6 +1017,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         instance_ids=instance_ids,
         workers=args.harness_workers,
         run_id=harness_run_id,
+        # Anchor the report to this run instead of the caller's CWD. Repeated
+        # runs each grade their own predictions, so a shared directory would
+        # work too, but a per-run directory is what makes the report findable
+        # from the run it belongs to.
+        report_dir=args.harness_report_dir or results,
     )
     manifest = {
         "schema_version": 1,
@@ -1004,7 +1088,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # fell back to certifying themselves. `verified_unavailable` is separate from
     # `verified_red` on purpose: an image with no test runtime is a fact about
     # the harness, not a wrong answer.
-    manifest["harness_verification_summary"] = _verification_summary(records)
+    manifest["harness_verification_summary"] = verification_summary(records)
     _write_json(manifest_path, manifest)
     print(f"[swe-adapter] predictions -> {predictions_path}")
     if args.evaluate:

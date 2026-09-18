@@ -11,9 +11,10 @@ drives the agent purely through the HTTP API and grades its code with pytest.
 | `runner.py` | Executes the dataset: writes context files, POSTs `/v1/agent/run`, polls `/v1/agent/status` to a terminal state, then runs each problem's pytest verification. Supports `--parallel`, `--resume`, `--dry-run`. |
 | `matrix.py` | Fixed 30-task × 3-repeat ablation: single ReAct / Plan-and-Execute / Reflection versus multi-agent AUTO. Writes a dataset hash/config manifest, repeat mean/stddev, and failure distributions. |
 | `scorer.py` | Pass@1 statistics (overall / by category / by difficulty), failure-reason distribution, `summary.json`, `report.md`, optional matplotlib `chart.png`. |
+| `stats.py` | `summarize()` — mean / population stddev / n for one sample, with `None` for an unmeasured spread. Shared by `matrix.py` and the SWE-bench repeat report so both print the same rule. |
 | `_gen_dataset.py` | Generator that emits `dataset.json` (edit problems here and regenerate). |
 | `p1_openrouter_perf.py` | OpenRouter online benchmark for P1-4 reasoning strategies and P1-5 polluted-memory correction. |
-| `swe_verified/` | Prompt-safe 8×4 SWE-bench Verified suite plus an executable MyCoder-to-official-harness adapter. |
+| `swe_verified/` | Prompt-safe 8×4 SWE-bench Verified suite plus an executable MyCoder-to-official-harness adapter, and `variance.py` for repeated official-scored runs. |
 
 ## P1-4 / P1-5 OpenRouter performance benchmark
 
@@ -138,6 +139,34 @@ SWE-bench package/Docker images are available.
    `manifest.json` freezes the dataset SHA-256, model/provider/temperature,
    variants and repeat count. `summary.json` reports repeat-level pass-rate
    mean/stddev, latency/token mean/stddev, and failure-class distribution.
+
+5. **Run the SWE-bench suite repeatedly and report the spread:**
+
+   ```bash
+   # Plan only: shows the exact per-repeat adapter command
+   python -m eval_bench.swe_verified.variance --repeats 3 --dry-run
+
+   # Three identical runs, each graded by the official harness
+   python -m eval_bench.swe_verified.variance \
+     --repeats 3 --base-url http://localhost:8000 \
+     --instance-id pytest-dev__pytest-5262 --instance-id sympy__sympy-16886
+   ```
+
+   Each repeat is a full adapter run under `<results>/repeat-N`, so every repeat
+   grades its own predictions and writes its own official report next to them.
+   `summary.json` / `summary.md` report Pass@1 as mean ± population standard
+   deviation over the repeats, which instances resolved in every repeat and
+   which were flaky, plus generation-side diagnostics (duration, patch size,
+   adapter error classes, harness verdict counts).
+
+   Pass@1 comes from the official harness report, never from the adapter's own
+   record: the adapter only establishes that a patch was produced, and folding
+   the two together would make "no patch" and "wrong patch" look alike. Every
+   repeat must also carry an identical adapter `contract` — averaging over two
+   configurations would measure the difference between them, not the agent's
+   spread — and a repeat with no official report is reported as ungraded rather
+   than folded into the mean. Use `--no-evaluate` for a generation-only run, and
+   `--run-dir <dir>` (repeatable) to aggregate repeats that already exist.
 
 ## CLI reference
 
