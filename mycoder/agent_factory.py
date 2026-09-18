@@ -38,6 +38,7 @@ class AgentFactory:
         memory_store=None,
         soft_budget_ratio: float | None = None,
         tool_tracer=None,
+        run_recorder=None,
     ) -> None:
         self.llm = llm
         self.tools = list(tools)
@@ -50,6 +51,7 @@ class AgentFactory:
         self.memory_store = memory_store
         self.soft_budget_ratio = soft_budget_ratio
         self.tool_tracer = tool_tracer
+        self.run_recorder = run_recorder
 
     @classmethod
     def from_defaults(
@@ -63,6 +65,7 @@ class AgentFactory:
         enable_memory: bool = True,
         soft_budget_ratio: float | None = None,
         tool_tracer=None,
+        run_recorder=None,
     ) -> "AgentFactory":
         memory = None
         memory_compressor = None
@@ -108,6 +111,7 @@ class AgentFactory:
             memory_store=memory_store,
             soft_budget_ratio=soft_budget_ratio,
             tool_tracer=tool_tracer,
+            run_recorder=run_recorder,
         )
 
     def build(
@@ -130,6 +134,7 @@ class AgentFactory:
         verification_reserved_tokens: int | None = None,
         tool_tracer=None,
         trace_context: dict[str, Any] | None = None,
+        run_recorder=None,
     ) -> Agent:
         if run_contract is not None:
             require_mutation = run_contract.require_mutation
@@ -162,6 +167,7 @@ class AgentFactory:
             verification_reserved_tokens=verification_reserved_tokens,
             tool_tracer=tool_tracer if tool_tracer is not None else self.tool_tracer,
             trace_context=trace_context,
+            run_recorder=run_recorder if run_recorder is not None else self.run_recorder,
         )
 
     def maintain_memory(self, *, close: bool = False) -> None:

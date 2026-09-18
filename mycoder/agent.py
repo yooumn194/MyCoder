@@ -120,6 +120,7 @@ class Agent:
         verification_reserved_tokens: int | None = None,
         tool_tracer=None,
         trace_context: dict | None = None,
+        run_recorder=None,
     ):
         self.llm = llm
         self.tools = tools if tools is not None else ALL_TOOLS
@@ -178,6 +179,11 @@ class Agent:
         self.verification_reserved_tokens = max(0, int(verification_reserved_tokens))
         self.tool_tracer = tool_tracer
         self.trace_context = dict(trace_context or {})
+        # Append-only run log (observability/run_log.py). None = no recording;
+        # the LLM side of the same log is written by RecordingLLM, so a run
+        # recorded here can be re-executed by mycoder.replay without a provider.
+        self.run_recorder = run_recorder
+        self._round_index = 0
         self.convergence_limits = convergence_limits or ConvergenceLimits.from_env(max_rounds)
         # P1 (prompts/reasoning.py): reasoning strategy — ReAct / Plan-and-
         # Execute / Reflection. A manual override (explicit arg or the
@@ -401,8 +407,115 @@ class Agent:
         except Exception as exc:  # noqa: BLE001 - tracing cannot break execution
             logger.warning("tool_call_trace_failed", error_msg=str(exc))
 
+    def _safe_run_record(self, method: str, **payload) -> None:
+        """Record one run-log event. Recording never breaks the turn it observes."""
+        recorder = self.run_recorder
+        if recorder is None:
+            return
+        try:
+            getattr(recorder, method)(**payload)
+        except Exception as exc:  # noqa: BLE001 - run logging is best-effort
+            logger.warning("run_log_record_failed", event=method, error_msg=str(exc))
+
+    def _environment_flags(self) -> dict:
+        """Where the run happened, read off the tools that own that state.
+
+        A replay that runs in the wrong workspace, or with the wrong sandbox
+        policy, produces tool results that differ for reasons that have nothing
+        to do with the change under test. Recording this is what lets the
+        replay report say "you replayed it elsewhere" instead of blaming a tool.
+        """
+        flags: dict = {}
+        for tool in self.tools:
+            manager = getattr(tool, "manager", None)
+            if manager is None or getattr(manager, "project_dir", None) is None:
+                continue
+            benchmark = getattr(manager, "benchmark_mode", None)
+            if benchmark is not None:
+                flags["sandbox_policy"] = "benchmark" if benchmark else "interactive"
+            flags["sandbox_image"] = getattr(manager, "image", None)
+            flags["sandbox_user"] = getattr(manager, "user", None)
+            flags["project_root"] = str(getattr(manager, "project_dir", "") or "")
+            break
+        return {key: value for key, value in flags.items() if value is not None}
+
+    def _record_run_start(self, user_input: str) -> None:
+        if self.run_recorder is None:
+            return
+        from . import __version__
+
+        limits = self.convergence_limits
+        budget = self.budget_guard
+        flags = {
+            "require_mutation": self.require_mutation,
+            "require_verification": self.require_verification,
+            "strict_tool_choice": self.strict_tool_choice,
+            "max_rounds": self.max_rounds,
+            "max_context_tokens": self.context.max_tokens,
+            "reasoning_strategy": self.reasoning_strategy,
+            "strategy_mode": self._strategy_mode,
+            "reserved_tokens": self.reserved_tokens,
+            "max_turn_tokens": self.max_turn_tokens,
+            "mutation_reserved_tokens": self.mutation_reserved_tokens,
+            "verification_reserved_tokens": self.verification_reserved_tokens,
+            "soft_budget_ratio": getattr(limits, "soft_budget_ratio", None),
+            "convergence_max_rounds": getattr(limits, "max_rounds", None),
+            "max_tool_calls": getattr(limits, "max_tool_calls", None),
+            "max_identical_tool_calls": getattr(limits, "max_identical_tool_calls", None),
+            "max_stagnant_rounds": getattr(limits, "max_stagnant_rounds", None),
+            "budget_max_tokens": getattr(budget, "max_tokens_per_session", None),
+            "tool_selector": type(self.tool_selector).__name__ if self.tool_selector else None,
+            "memory": self.memory is not None,
+        }
+        flags.update(self._environment_flags())
+        flags.update({key: value for key, value in self.trace_context.items() if value is not None})
+        self._safe_run_record(
+            "record_run_start",
+            prompt=user_input,
+            model=str(getattr(self.llm, "model", "") or "unknown"),
+            provider=str(getattr(self.llm, "provider", "") or "unknown"),
+            tool_dialect=getattr(self.llm, "tool_dialect", None),
+            cwd=os.getcwd(),
+            tools=[tool.name for tool in self.tools],
+            flags=flags,
+            session_id=self._session_id(),
+            version=str(__version__),
+            nested=self.trace_context.get("subagent_name", "main") != "main",
+        )
+
     def chat(self, user_input: str, on_token=None, on_tool=None) -> str:
-        """Process one user message. May involve multiple LLM/tool rounds."""
+        """Process one user message. May involve multiple LLM/tool rounds.
+
+        With a run recorder attached, the turn is bracketed by ``run_start`` /
+        ``run_end`` events so a multi-turn session still yields one replayable
+        window per turn.
+        """
+        if self.run_recorder is None:
+            return self._run_turn(user_input, on_token=on_token, on_tool=on_tool)
+        self._round_index = 0
+        self._record_run_start(user_input)
+        try:
+            answer = self._run_turn(user_input, on_token=on_token, on_tool=on_tool)
+        except BaseException as exc:  # noqa: BLE001 - record the failure, then re-raise
+            self._safe_run_record(
+                "record_run_end",
+                status="error",
+                error=f"{type(exc).__name__}: {exc}",
+                rounds=self._round_index,
+                nested=self.trace_context.get("subagent_name", "main") != "main",
+            )
+            raise
+        self._safe_run_record(
+            "record_run_end",
+            status="ok",
+            answer=answer,
+            rounds=self._round_index,
+            nested=self.trace_context.get("subagent_name", "main") != "main",
+        )
+        return answer
+
+    def _run_turn(self, user_input: str, on_token=None, on_tool=None) -> str:
+        """The agent loop itself (see ``chat`` for the recording wrapper)."""
         self._turn_start_used = self._current_budget_used()
         self._turn_tool_events = []
         # Pre-LLM injection defense: regex always runs; the semantic classifier
@@ -455,7 +568,8 @@ class Agent:
         # must be consumed.  Otherwise providers that ignore the mutation
         # contract can keep replaying the same inspection forever.
         recovery_read_used = False
-        for _ in range(self.max_rounds + 1):
+        for round_index in range(self.max_rounds + 1):
+            self._round_index = round_index + 1
             budget_requirement_prompt: str | None = None
             self._active_mutation_done = required_mutation_done
             self._active_verification_done = required_verification_done
@@ -630,6 +744,17 @@ class Agent:
                             f"{control_text}"
                         ),
                     }
+                    # Transient by design, but it changes the request the model
+                    # saw: replay recomputes it and diffs the text (see
+                    # replay._compare_controls) instead of silently accepting a
+                    # changed rollout control.
+                    self._safe_run_record(
+                        "record_control",
+                        kind="request_control",
+                        content=control_text,
+                        round_index=round_index,
+                        phase=convergence.phase.value,
+                    )
                 chat_kwargs = {
                     "messages": request_messages,
                     "tools": tool_schemas,
@@ -683,8 +808,24 @@ class Agent:
                                 ),
                             )
                         forced_requirement_phase = phase
+                        self._safe_run_record(
+                            "record_control",
+                            kind="mutation_feedback",
+                            content=feedback,
+                            round_index=round_index,
+                            attempt=mutation_feedback_rounds,
+                            phase=phase,
+                        )
                     else:
                         feedback = self._requirement_prompt(required_mutation_done, required_verification_done)
+                        self._safe_run_record(
+                            "record_control",
+                            kind="requirement_prompt",
+                            content=feedback,
+                            round_index=round_index,
+                            attempt=mutation_feedback_rounds,
+                            phase="requirement",
+                        )
                     self.messages.append(
                         {
                             "role": "user",
@@ -728,6 +869,11 @@ class Agent:
                 round_mutated = False
                 for tc, result in zip(resp.tool_calls, results):
                     result = self._guard_tool_result(tc.name, result)
+                    # The observation the model will see, framed exactly as it
+                    # enters the transcript. Recorded here so replay can compare
+                    # like with like (injection isolation and <tool_output>
+                    # framing are already applied on both sides).
+                    wrapped_result = self._wrap_tool_output(tc.name, result)
                     mutation = self._is_required_mutation(tc.name, result)
                     succeeded = self._tool_result_succeeded(result)
                     if mutation:
@@ -795,11 +941,28 @@ class Agent:
                         }
                     )
                     observations.append(ToolObservation(admissions[tc.id], tc.name, result))
+                    self._safe_run_record(
+                        "record_tool_result",
+                        name=tc.name,
+                        tool_call_id=tc.id,
+                        arguments=dict(tc.arguments),
+                        content=wrapped_result,
+                        status=self._turn_tool_events[-1]["status"],
+                        round_index=round_index,
+                        phase=convergence.phase.value,
+                        subagent=self.trace_context.get("subagent_name", "main"),
+                        mutation=mutation,
+                        verification=verified,
+                        blocked=not admissions[tc.id].allowed,
+                        duration_ms=getattr(result, "duration_ms", 0.0),
+                        retry_count=getattr(result, "retry_count", 0),
+                        cache_hit=getattr(result, "cache_hit", False),
+                    )
                     self.messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": tc.id,
-                            "content": self._wrap_tool_output(tc.name, result),
+                            "content": wrapped_result,
                         }
                     )
                 if round_mutated:
@@ -879,6 +1042,14 @@ class Agent:
                         ),
                     )
                 self.messages.append({"role": "user", "content": feedback})
+                self._safe_run_record(
+                    "record_control",
+                    kind="mutation_feedback",
+                    content=feedback,
+                    round_index=round_index,
+                    attempt=mutation_feedback_rounds,
+                    phase="mutate",
+                )
                 # Skip the stagnation stop gate for this one bounded recovery
                 # round.  No state change occurred, but the correction itself
                 # is new actionable context for the provider.

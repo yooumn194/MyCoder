@@ -503,6 +503,7 @@ async def _run_agent(
     budget_guard = TokenBudgetGuard(max_tokens_per_session=max_tokens, tracer=tracer)
     bind_contextvars(session_id=session_id)
     manager = None
+    run_recorder = None
     try:
         await state_backend.save_session(
             session_id,
@@ -537,6 +538,14 @@ async def _run_agent(
             # ``root`` explicitly after providing an image.
             sandbox_user=(metadata or {}).get("sandbox_user") or "sandbox",
             soft_budget_ratio=(metadata or {}).get("soft_budget_ratio"),
+            # Opt-in trace replay: MYCODER_RUN_LOG_DIR turns the run into an
+            # append-only event file that `python -m mycoder.replay` can re-execute
+            # without a provider.
+            run_context={
+                "execution_mode": (metadata or {}).get("execution_mode", "multi"),
+                "sandbox_policy": (metadata or {}).get("sandbox_policy", "interactive"),
+                "workspace_root": (metadata or {}).get("workspace_root"),
+            },
         )
         contract = RunContract.from_policy((metadata or {}).get("sandbox_policy", "interactive"))
         # P0-4: with a verification command configured the harness owns the
@@ -547,6 +556,7 @@ async def _run_agent(
         if benchmark_verify_command((metadata or {}).get("benchmark_verify_cmd")):
             contract = contract.with_harness_verification()
         manager = getattr(orchestrator, "_sandbox_manager", None)
+        run_recorder = getattr(orchestrator, "_run_recorder", None)
         harness_verification: dict | None = None
         if manager is not None:
             # P0-1: the container mounts this very checkout read-write, so
@@ -719,6 +729,11 @@ async def _run_agent(
                 await manager.stop()
             except Exception:  # noqa: BLE001 - sandbox teardown is best-effort
                 pass
+        if run_recorder is not None:
+            try:
+                run_recorder.close()
+            except Exception:  # noqa: BLE001 - logging must not mask job cleanup
+                logger.warning("run_log_close_failed", session_id=session_id)
 
 
 async def _enforce_benchmark_verification(

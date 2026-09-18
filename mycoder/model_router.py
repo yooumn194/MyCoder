@@ -221,18 +221,32 @@ def build_model_factory(base_llm, router: ModelRouter | None = None):
     def _build(model: str):
         if model == getattr(base_llm, "model", None):
             return base_llm
+        if not getattr(base_llm, "builds_tier_clients", True):
+            # A replay (or any mock) base LLM serves every tier itself.
+            # Constructing a second client here would spend real tokens or hit
+            # the network in the middle of a supposedly offline replay.
+            return base_llm
         kwargs = dict(getattr(base_llm, "extra", {}))
         if hasattr(base_llm, "provider"):
             kwargs["provider"] = provider
         if hasattr(base_llm, "tool_dialect"):
             kwargs["tool_dialect"] = getattr(base_llm, "tool_dialect")
-        return base_llm.__class__(
-            model=model,
-            api_key=_api_key(),
-            base_url=_base_url(),
-            tracer=getattr(base_llm, "_tracer", None),
-            caller="model_router",
-            **kwargs,
+        # Build against the *undecorated* client, then restore the decorator
+        # chain: recording has to survive a second client, or the run log would
+        # be missing exactly the calls that are hardest to reproduce.
+        from .observability.run_log import llm_core, llm_like
+
+        core = llm_core(base_llm)
+        return llm_like(
+            base_llm,
+            core.__class__(
+                model=model,
+                api_key=_api_key(),
+                base_url=_base_url(),
+                tracer=getattr(core, "_tracer", None),
+                caller="model_router",
+                **kwargs,
+            ),
         )
 
     def factory(tier: str | None):

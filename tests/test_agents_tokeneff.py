@@ -36,6 +36,20 @@ def test_agent_factory_applies_request_soft_budget_ratio():
     assert agent.convergence_limits.max_rounds == 8
 
 
+def test_agent_factory_propagates_run_recorder_to_built_agents():
+    recorder = object()
+    factory = AgentFactory.from_defaults(
+        llm=object(),
+        tools=[],
+        enable_memory=False,
+        run_recorder=recorder,
+    )
+
+    agent = factory.build(max_rounds=1)
+
+    assert agent.run_recorder is recorder
+
+
 def test_subagent_uses_definition_context_window(monkeypatch):
     captured = {}
 

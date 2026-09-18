@@ -170,6 +170,12 @@ mem 512m · cpu 0.5 核 · pids 128（防 fork bomb）
 - **预算与限流**：session token 预算（默认 100k），API 限流（令牌桶/漏桶/滑动窗口）
 - **SLO 告警**：成功率 <90%、p95 >5s 触发告警（防抖）
 - **监控报告**：`GET /v1/agent/report` 聚合 LLM、工具调用与生产任务成功率
+- **append-only run log + trace replay**：`--run-log`（CLI）或 `MYCODER_RUN_LOG_DIR`（API）把一次运行写成逐行 JSONL：
+  每次 LLM 调用的**请求指纹**（逐条消息摘要 + 工具目录摘要）与完整响应、每次工具观测、循环注入的反馈、运行契约；
+  崩溃或被杀进程只截断尾部，前缀仍可复放。`python -m mycoder.replay` 用**真实 agent 循环**重跑这条记录的确定性部分
+  （工具层、收敛控制、要求门禁、上下文压缩），模型决策由日志回放，**不调用 provider、不花 token**：
+  工具结果或请求指纹不一致即报分歧并定位到具体那次调用，因此“同一 instance 这次过、下次不过”可以判定是
+  *改动导致动作层变了* 还是 *单纯采样不同*
 
 ---
 
@@ -206,6 +212,8 @@ mem 512m · cpu 0.5 核 · pids 128（防 fork bomb）
 | `MYCODER_OBSERVABILITY_PATH` | `.mycoder/api_state.db` | local 模式 Trace/限流/告警 SQLite 路径；默认与 API 状态共库 |
 | `MYCODER_OBSERVABILITY_TTL_SECONDS` | `604800` | SQLite/Redis Trace、告警历史保留时间（秒） |
 | `MYCODER_OBSERVABILITY_MAX_ALERTS` | `10000` | SQLite/Redis 告警历史最大条数 |
+| `MYCODER_RUN_LOG` / `MYCODER_RUN_LOG_DIR` | 关 | 开启 append-only run log：CLI 用前者（文件或目录），API 用后者（每 session 一个文件）。日志逐行记录每次 LLM 交换的请求指纹与响应、每次工具观测与循环注入的反馈，可用 `python -m mycoder.replay` 离线复跑（见“⑧ 可观测”） |
+| `MYCODER_RUN_LOG_MAX_CHARS` | `0` | run log 单个字段最大字符数；`0` 表示不截断（保真优先，截断会在事件里标记） |
 | `MYCODER_API_KEYS` | — | 租户 API key：JSON（`{"team":"secret"}`）或 `team=secret`；配置后 API 自动要求认证 |
 | `MYCODER_REQUIRE_AUTH` | `true` | API 默认必须认证；仅可信的本机开发可显式设为 `false` |
 | `MYCODER_WORKSPACE_ROOT` | 服务 cwd | 认证租户工作区根；实际目录为 `<root>/<tenant>/<workspace_id>` |

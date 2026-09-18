@@ -332,6 +332,7 @@ class SubagentRunner:
                     "subagent_name": self.definition.name,
                     "subagent_instance_id": self.instance_id,
                 },
+                run_recorder=getattr(self.orchestrator, "_run_recorder", None),
             )
         raw = await asyncio.to_thread(sub.chat, f"{system_prompt}\n\nTask: {self.task}")
         self._verification_evidence = list(getattr(sub, "verification_evidence", []))

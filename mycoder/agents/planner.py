@@ -138,7 +138,7 @@ class TaskPlanner:
             {"role": "user", "content": build_user_prompt(task, context)},
         ]
         kwargs: dict[str, Any] = {"response_format": {"type": "json_object"}}
-        if isinstance(self._llm, LLM):
+        if isinstance(self._llm, LLM) or getattr(self._llm, "supports_request_options", False):
             # LLM/LiteLLM can enforce the timeout in their HTTP client. Also
             # disable transport retries here: planner.decompose owns the one
             # bounded semantic retry, avoiding retries at two nested layers.

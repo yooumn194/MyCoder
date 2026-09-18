@@ -2,11 +2,19 @@
 
 * trace.py   — LLMCallTrace + LLMTracer (thread-safe recorder/aggregation).
 * tool_trace.py — redacted tool-call and required-action traces.
+* run_log.py — append-only per-run event stream (recording side of replay).
 * store.py   — process-independent SQLite/Redis trace/rate/alert state.
 * budget.py  — TokenBudgetExceeded + TokenBudgetGuard.
 """
 
 from .budget import TokenBudgetExceeded, TokenBudgetGuard
+from .run_log import (
+    RecordingLLM,
+    RunLog,
+    RunLogError,
+    RunLogRecorder,
+    recording_model_factory,
+)
 from .store import (
     AlertStore,
     ObservabilityStore,
@@ -23,6 +31,11 @@ __all__ = [
     "LLMTracer",
     "ToolCallTrace",
     "ToolTracer",
+    "RunLog",
+    "RunLogError",
+    "RunLogRecorder",
+    "RecordingLLM",
+    "recording_model_factory",
     "estimate_tokens",
     "TokenBudgetExceeded",
     "TokenBudgetGuard",

@@ -31,6 +31,7 @@ from mycoder.config import Config
 from mycoder.observability.alerts import AlertManager
 from mycoder.observability.budget import TokenBudgetGuard
 from mycoder.observability.ratelimit import RateLimiter
+from mycoder.observability.run_log import RecordingLLM, recording_model_factory
 from mycoder.observability.store import ObservabilityStore, create_observability_store
 from mycoder.observability.trace import LLMTracer
 from mycoder.observability.tool_trace import ToolTracer
@@ -133,6 +134,31 @@ def get_tool_tracer() -> ToolTracer:
     return _tool_tracer
 
 
+def run_log_recorder(session_id: str, metadata: dict | None = None):
+    """Per-run append-only log, or None when recording is switched off.
+
+    Opt-in by environment (``MYCODER_RUN_LOG_DIR``) because the log reproduces
+    conversation text verbatim: it is a debugging/benchmark artifact, not
+    production telemetry. The path is per session so concurrent runs on one
+    worker cannot interleave into the same file.
+    """
+    target = (os.getenv("MYCODER_RUN_LOG_DIR") or "").strip()
+    if not target:
+        return None
+    from mycoder.observability.run_log import RunLogRecorder
+
+    context = {
+        "execution_mode": (metadata or {}).get("execution_mode", "multi"),
+        "sandbox_policy": (metadata or {}).get("sandbox_policy", "interactive"),
+        "workspace_root": (metadata or {}).get("workspace_root"),
+    }
+    return RunLogRecorder(
+        target,
+        run_id=session_id,
+        run_context={key: value for key, value in context.items() if value is not None},
+    )
+
+
 def get_rate_limiter() -> RateLimiter | None:
     """Configured distributed limiter; None keeps the endpoint unlimited."""
     global _rate_limiter, _rate_limiter_ready
@@ -225,12 +251,22 @@ def get_orchestrator(
         sandbox_image: str | None = None,
         sandbox_user: str = "sandbox",
         soft_budget_ratio: float | None = None,
+        run_context: dict | None = None,
     ) -> Orchestrator:
         from mycoder.memory.experience import remember_replan
         from mycoder.model_router import build_model_factory
 
         blackboard = PersistentBlackboard(state_backend, session_id)
-        llm = llm if llm is not None else get_default_llm()
+        raw_llm = llm if llm is not None else get_default_llm()
+        # Trace replay (opt-in): record every LLM exchange and tool observation
+        # for this run into one append-only file. The model-tier factory is
+        # built from the RAW llm (it constructs same-class instances for other
+        # tiers) and wrapped afterwards, so tier sub-agents are recorded too.
+        recorder = run_log_recorder(session_id, run_context)
+        llm = RecordingLLM(raw_llm, recorder) if recorder is not None else raw_llm
+        model_factory = build_model_factory(raw_llm)
+        if recorder is not None:
+            model_factory = recording_model_factory(model_factory, recorder)
         manager = None
         if tools is None and workspace_root is not None:
             tools, manager = build_scoped_tools(
@@ -248,6 +284,11 @@ def get_orchestrator(
             budget_guard=budget_guard,
             soft_budget_ratio=soft_budget_ratio,
             tool_tracer=get_tool_tracer(),
+            # Keep tool/control events in the same append-only stream as the
+            # wrapped LLM. Without this, API recordings contained provider
+            # calls but silently omitted the action layer that replay is meant
+            # to validate.
+            run_recorder=recorder,
         )
         orchestrator = Orchestrator(
             blackboard=blackboard,
@@ -260,7 +301,7 @@ def get_orchestrator(
             budget_guard=budget_guard,
             # P2 model-tier routing (cost): sub-agents get a tier-appropriate
             # model per config/model_routing.yaml instead of the shared LLM.
-            model_factory=build_model_factory(llm),
+            model_factory=model_factory,
             # P1 re-planning experience: deviation playbooks persist to the
             # memory DB (best-effort; no memory backend -> no-op) so API
             # sub-agent recovery lessons are reusable across sessions.
@@ -274,6 +315,7 @@ def get_orchestrator(
         orchestrator.agent_factory = agent_factory
         # The API worker owns and tears down this per-run manager.
         orchestrator._sandbox_manager = manager  # noqa: SLF001
+        orchestrator._run_recorder = recorder  # noqa: SLF001
         return orchestrator
 
     return _build

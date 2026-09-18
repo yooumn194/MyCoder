@@ -39,6 +39,15 @@ def _parse_args():
     p.add_argument("--api-key", help="API key (default: $OPENAI_API_KEY)")
     p.add_argument("-p", "--prompt", help="One-shot prompt (non-interactive mode)")
     p.add_argument("-r", "--resume", metavar="ID", help="Resume a saved session")
+    p.add_argument(
+        "--run-log",
+        metavar="PATH",
+        help=(
+            "Record an append-only event log (JSONL file, or a directory to name per run) "
+            "that `python -m mycoder.replay` can re-execute without a provider. "
+            "Also settable via $MYCODER_RUN_LOG."
+        ),
+    )
     p.add_argument("-v", "--version", action="version", version=f"%(prog)s {__version__}")
     return p.parse_args()
 
@@ -169,6 +178,20 @@ def main():
         max_tokens=config.max_tokens,
         tracer=tracer,
     )
+    # Trace replay (opt-in): wrap the LLM so every exchange is appended to a run
+    # log, and hand the same recorder to the agent for tool/control events.
+    run_log_target = args.run_log or os.getenv("MYCODER_RUN_LOG")
+    run_recorder = None
+    if run_log_target:
+        from .observability.run_log import RecordingLLM, RunLogRecorder
+
+        run_recorder = RunLogRecorder(
+            run_log_target,
+            run_id=args.resume or "cli",
+            run_context={"execution_mode": "single", "sandbox_policy": "interactive"},
+        )
+        llm = RecordingLLM(llm, run_recorder)
+        console.print(f"[green]Run log: {run_recorder.path}[/green]")
     # Phase 3.5: MCP servers (config/mcp_servers.yaml, all opt-in by default).
     # A broken MCP server never blocks the REPL.
     mcp_tools = []
@@ -195,6 +218,7 @@ def main():
         max_context_tokens=config.max_context_tokens,
         budget_guard=budget_guard,
         additional_tool_names={t.name for t in mcp_tools},
+        run_recorder=run_recorder,
     )
     global _memory_maintenance
 
@@ -222,13 +246,17 @@ def main():
             console.print(f"[red]Session '{args.resume}' not found.[/red]")
             sys.exit(1)
 
-    # one-shot mode
-    if args.prompt:
-        _run_once(agent, args.prompt)
-        return
+    try:
+        # one-shot mode
+        if args.prompt:
+            _run_once(agent, args.prompt)
+            return
 
-    # interactive REPL
-    _repl(agent, config)
+        # interactive REPL
+        _repl(agent, config)
+    finally:
+        if run_recorder is not None:
+            run_recorder.close()
 
 
 def _run_once(agent: Agent, prompt: str):
